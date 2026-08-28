@@ -785,7 +785,7 @@ export class HiveManager {
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
-            if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
+            else if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id);
               // Codex refuses to run hooks from a config dir without persisted
@@ -1935,7 +1935,7 @@ export class HiveManager {
    *  a missing/malformed existing file is treated as `{}`, and any write
    *  failure is logged and degrades to "spawns, but no live status" — the same
    *  philosophy already used for the pi/opencode bridges. */
-  installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void {
+  private installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void {
     const root = this.root();
     if (!root) return;
     const shimPath = join(root, 'bin', 'deepcode-notify.cjs');
