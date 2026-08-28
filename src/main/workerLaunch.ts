@@ -3,7 +3,7 @@
  * pure function: this exact translation silently killed real workers for days
  * while reporting success, which is what earned it a unit test.
  */
-import { autoModeFlagForProvider, hasAutoModeStance, inferAgentProvider } from '../shared/agentProvider';
+import { autoModeFlagForProvider, hasAutoModeStance, inferAgentProvider, providerPreset } from '../shared/agentProvider';
 import { tokenizeCommand } from '../shared/commandLine';
 
 export interface WorkerLaunch {
@@ -58,6 +58,7 @@ export function buildWorkerLaunch(opts: {
   // when argv already carries --model).
   const model =
     typeof opts.requestModel === 'string' && opts.requestModel.trim() ? opts.requestModel.trim() : '';
-  const args = [...flags, ...(model && !flags.includes('--model') ? ['--model', model] : [])];
+  const hasModelFlag = !!providerPreset(provider).modelFlag;
+  const args = [...flags, ...(model && hasModelFlag && !flags.includes('--model') ? ['--model', model] : [])];
   return { bin, args, command };
 }

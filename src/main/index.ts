@@ -4701,7 +4701,7 @@ async function processSpawnRequest(filePath: string): Promise<void> {
   const spawnOpts: AgentSpawnOptions = {
     id: workerId, cwd, command: bin, cols: 120, rows: 32,
     args: launch.args,
-    hive: meta, isolate, provider: raw.provider, env: brokerEnv
+    hive: meta, isolate, provider: raw.provider, model: raw.model, env: brokerEnv
   };
 
   let res: { ok: boolean; error?: string; worktreePath?: string };
