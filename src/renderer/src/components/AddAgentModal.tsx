@@ -408,6 +408,7 @@ export function AddAgentModal({ onClose, config, onConfigChange }: AddAgentModal
       cwd,
       command: exe,
       provider,
+      model,
       args,
       cols: 100,
       rows: 30,

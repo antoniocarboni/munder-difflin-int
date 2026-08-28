@@ -134,6 +134,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
             cwd,
             command: exe,
             provider,
+            model: a.model,
             args,
             cols: 100,
             rows: 30,

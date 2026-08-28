@@ -501,6 +501,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
         command: exe,
         args,
         provider,
+        model,
         cols,
         rows,
         hive,

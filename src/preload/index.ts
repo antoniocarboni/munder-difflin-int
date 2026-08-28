@@ -203,6 +203,12 @@ export interface SpawnPtyOptions {
   command: string;
   /** Which CLI to spawn; usually inferred from `command` in the main process. */
   provider?: AgentProvider;
+  /** Chosen model, for a provider whose model has no CLI flag and instead needs
+   *  it written into that provider's own settings file (currently only
+   *  'deepcode' — see AgentProviderPreset.modelDeliveredVia). Every other
+   *  provider already gets its model spliced onto `command` by
+   *  buildSpawnCommand and ignores this field. */
+  model?: string;
   args?: string[];
   cols?: number;
   rows?: number;
