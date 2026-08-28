@@ -44,8 +44,33 @@ test('a vaultSync config round-trips through writeConfig/readConfig', () => {
   assert.deepEqual(cfg.knowledgeGraph.vaultSync.projects, [mapping]);
 });
 
-test('a partial knowledgeGraph patch (like toggleKg) preserves vaultSync defaults', () => {
-  // Simulate Settings UI behavior: stage only {enabled: true} without vaultSync
+test('a partial knowledgeGraph patch (like toggleKg) preserves an existing vaultSync config', () => {
+  // Seed a REAL vaultSync config first, the way the feature's own Settings UI would.
+  const mapping = { slug: 'burdastyle', repoOrigin: 'git@bitbucket.org:magenio/burdastyle.git', vaultFolder: '01-Projects/BurdaStyle' };
+  writeConfig({
+    knowledgeGraph: {
+      enabled: true,
+      vaultSync: { enabled: true, vaultPath: '~/Documents/Obsidian/SecondBrain', projects: [mapping] }
+    }
+  });
+
+  // Simulate the pre-existing Settings UI's "Knowledge Graph" toggle: it stages
+  // only {enabled} — no vaultSync field at all — the same partial patch that
+  // used to silently wipe vaultSync via writeConfig's shallow merge.
+  writeConfig({
+    knowledgeGraph: { enabled: false }
+  });
+
+  const cfg = readConfig();
+  assert.equal(cfg.knowledgeGraph.enabled, false);
+  // The vaultSync config from before the toggle must survive untouched.
+  assert.equal(cfg.knowledgeGraph.vaultSync.enabled, true);
+  assert.equal(cfg.knowledgeGraph.vaultSync.vaultPath, '~/Documents/Obsidian/SecondBrain');
+  assert.deepEqual(cfg.knowledgeGraph.vaultSync.projects, [mapping]);
+});
+
+test('a partial knowledgeGraph patch on a fresh install (no prior vaultSync) still shows empty defaults', () => {
+  writeConfig({ knowledgeGraph: undefined });
   writeConfig({
     knowledgeGraph: { enabled: true }
   });

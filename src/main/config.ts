@@ -718,6 +718,22 @@ export function writeConfig(patch: Partial<HarnessConfig>): HarnessConfig {
     next.harnessHome = home;
     next.recentHives = recentHives;
   }
+  // `writeConfig` merges one level deep, so a PARTIAL `knowledgeGraph` patch
+  // (e.g. the pre-existing Settings toggle sending only `{ enabled }`) would
+  // otherwise wipe `knowledgeGraph.vaultSync` — including the user's
+  // configured `vaultPath`/`projects` — from disk. Deep-fill `vaultSync` here
+  // the same way `withTriggerDefaults` deep-fills it on the read side: a
+  // patch that omits `vaultSync` preserves the current one; a patch that DOES
+  // include `vaultSync` fully replaces it at that level (matching
+  // `withTriggerDefaults`'s own "a patched `projects` array replaces, it
+  // doesn't element-wise merge" semantics).
+  if (patch.knowledgeGraph) {
+    next.knowledgeGraph = {
+      ...current.knowledgeGraph,
+      ...patch.knowledgeGraph,
+      vaultSync: { ...current.knowledgeGraph?.vaultSync, ...patch.knowledgeGraph.vaultSync }
+    };
+  }
   return persistConfig(next);
 }
 
