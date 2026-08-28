@@ -1923,7 +1923,10 @@ export class HiveManager {
     }
   }
 
-  /** Write (once) the deepcode-notify shim, then merge this agent's OWN
+  /** Write the deepcode-notify shim (rewritten unconditionally on every call, same
+   *  stable path, so a later app version's fix to the shim's body reaches agents
+   *  that were spawned under an older shim — matches installAgyHooks and the
+   *  grok/gemini installers), then merge this agent's OWN
    *  `.deepcode/settings.json` (project-level, scoped by its own cwd — no
    *  CODEX_HOME-style isolation needed) with exactly three fields: `notify`
    *  (the shim path), `permissions.defaultMode` (mirrors hive auto mode:
@@ -1940,10 +1943,8 @@ export class HiveManager {
     if (!root) return;
     const shimPath = join(root, 'bin', 'deepcode-notify.cjs');
     try {
-      if (!existsSync(shimPath)) {
-        mkdirSync(dirname(shimPath), { recursive: true });
-        writeFileSync(shimPath, DEEPCODE_NOTIFY_SHIM, { mode: 0o755 });
-      }
+      mkdirSync(dirname(shimPath), { recursive: true });
+      writeFileSync(shimPath, DEEPCODE_NOTIFY_SHIM, { mode: 0o755 });
     } catch (e) { console.error('[deepcode] could not write notify shim:', e); return; }
 
     const settingsPath = join(meta.cwd, '.deepcode', 'settings.json');

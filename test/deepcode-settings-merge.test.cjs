@@ -82,7 +82,7 @@ test('a malformed existing settings.json does not throw — the write proceeds a
   assert.equal(s.permissions.defaultMode, 'allowAll');
 });
 
-test('the shim is written once to <hive>/bin/deepcode-notify.cjs, shared across agents', () => {
+test('the shim lives at a stable <hive>/bin/deepcode-notify.cjs path shared across agents (rewritten each call, same path/content)', () => {
   const hive = new HiveManager(() => userData);
   const cwd1 = agentCwd();
   const cwd2 = agentCwd();
