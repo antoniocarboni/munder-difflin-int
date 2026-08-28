@@ -52,6 +52,11 @@
       { "id": "qwen3-coder", "label": "Qwen3 Coder", "minAppVersion": null, "maxAppVersion": null },
       { "id": "qwen-max", "label": "Qwen Max", "minAppVersion": null, "maxAppVersion": null }
     ],
+    "deepcode": [
+      { "label": "CLI default", "minAppVersion": null, "maxAppVersion": null },
+      { "id": "deepseek-v4-pro", "label": "DeepSeek V4 Pro", "minAppVersion": null, "maxAppVersion": null },
+      { "id": "deepseek-v4-flash", "label": "DeepSeek V4 Flash", "minAppVersion": null, "maxAppVersion": null }
+    ],
     "opencode": [
       { "label": "CLI default", "minAppVersion": null, "maxAppVersion": null },
       { "id": "anthropic/claude-sonnet-4-5", "label": "Claude Sonnet 4.5 (Anthropic)", "minAppVersion": null, "maxAppVersion": null },
