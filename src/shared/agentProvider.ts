@@ -29,6 +29,7 @@ export type AgentProvider =
   | 'gemini'
   | 'antigravity'
   | 'qwen'
+  | 'deepcode'
   | 'opencode'
   | 'crush'
   | 'pi'
@@ -51,7 +52,7 @@ export type AgentProvider =
  *               and `inboxDelivery` is how mail reaches it ('terminal' work-order
  *               handoff today; 'serve' reserved for a future HTTP push path). */
 export type BridgeDescriptor =
-  | { kind: 'hooks'; shim: 'agy' | 'codex' | 'pi' | 'opencode' | 'grok' | 'gemini' }
+  | { kind: 'hooks'; shim: 'agy' | 'codex' | 'pi' | 'opencode' | 'grok' | 'gemini' | 'deepcode' }
   | {
       kind: 'proxy';
       api: 'openai' | 'anthropic';
@@ -76,6 +77,13 @@ export interface AgentProviderPreset {
   supportsModel: boolean;
   /** Flag that selects the session model, e.g. `--model`. */
   modelFlag?: string;
+  /** How a chosen model reaches this CLI. undefined (every existing provider) =
+   *  today's behavior: `modelFlag` is spliced onto the spawn command line.
+   *  'settingsFile' = this CLI has no model flag; the chosen model is instead
+   *  written into its own persistent config before spawn (see the provider's
+   *  bridge-install step in hive.ts). Only meaningful when `supportsModel` is
+   *  true — set alongside it. */
+  modelDeliveredVia?: 'flag' | 'settingsFile';
   /** Flag appended when the floor is in auto (skip-permissions) mode.
    *  PR #54 consumers read this; mirrors `autoModeFlag`. */
   autoFlag?: string;
@@ -565,6 +573,32 @@ export const AGENT_PROVIDER_PRESETS: AgentProviderPreset[] = [
     docsUrl: 'https://cursor.com/docs/cli/install'
   },
   {
+    // DeepCode — a terminal CLI tuned for DeepSeek models (@vegamo/deepcode-cli).
+    // Its `notify` hook fires once per COMPLETED TURN (not per tool call) and
+    // hands context via env vars, not stdin — no request to parse, no response
+    // it reads back (unlike Claude/agy's hooks, which can allow/deny a tool
+    // call), so it rides the same {kind:'hooks'} bridge family as agy/codex,
+    // just the simplest shim in it. No CLI --model flag exists; the chosen
+    // model is written into its own settings.json instead (modelDeliveredVia).
+    id: 'deepcode',
+    label: 'DeepCode',
+    defaultCommand: 'deepcode',
+    commandGroups: [],
+    // No CLI auto-mode flag — permissions.defaultMode in its own settings.json
+    // is the only thing that means anything for this provider (see hive.ts's
+    // installDeepcodeSettings).
+    autoModeFlag: '',
+    supportsModel: true,
+    modelDeliveredVia: 'settingsFile',
+    hiveAware: false,
+    bridge: { kind: 'hooks', shim: 'deepcode' },
+    canReceiveInbox: true,
+    initialPromptFlag: '-p', // `deepcode -p "<prompt>"`: launches the TUI WITH the prompt submitted (never -x, which runs once and exits)
+    resumeFlag: '--resume',
+    installCommand: 'npm install -g @vegamo/deepcode-cli',
+    docsUrl: 'https://deepcode.vegamo.cn/en'
+  },
+  {
     id: 'custom',
     label: 'Custom',
     defaultCommand: '',
@@ -586,6 +620,7 @@ export function isAgentProvider(value: unknown): value is AgentProvider {
     value === 'gemini' ||
     value === 'antigravity' ||
     value === 'qwen' ||
+    value === 'deepcode' ||
     value === 'opencode' ||
     value === 'crush' ||
     value === 'pi' ||

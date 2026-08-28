@@ -144,6 +144,12 @@ const CONTEXT_COMMANDS: Record<AgentProvider, ProviderContextCommands> = {
   // auto-compact. Revisit when a shipped command table is transcribed.
   cursor: NO_CONTEXT_COMMANDS,
 
+  // DeepCode (@vegamo/deepcode-cli) is a new interactive TUI for DeepSeek models.
+  // Its slash-command surface is not yet verified against a frozen binary catalog.
+  // Prefer null over guessing — wrong slashes into a live TUI are worse than no
+  // auto-compact. Revisit when a shipped command table is transcribed.
+  deepcode: NO_CONTEXT_COMMANDS,
+
   // An arbitrary user binary. We cannot know its command surface, and guessing
   // means typing slashes into someone's unknown REPL.
   custom: NO_CONTEXT_COMMANDS
