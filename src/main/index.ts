@@ -5172,6 +5172,18 @@ function onSystemResume(reason: string): void {
 }
 
 app.whenReady().then(() => {
+  // Dev-mode dock icon: electron-builder.yml only bakes `build/icon.*` into a
+  // PACKAGED build's bundle — an unpackaged `npm run dev` run has no icon
+  // wired in at all, so macOS falls back to the generic Electron icon. Packaged
+  // builds already carry their own icon via electron-builder, so this is a
+  // dev-only cosmetic fix.
+  if (!app.isPackaged && process.platform === 'darwin') {
+    try {
+      const devIcon = join(__dirname, '../../build/icon.png');
+      if (existsSync(devIcon)) app.dock?.setIcon(devIcon);
+    } catch (e) { console.error('[dev-icon] could not set dock icon:', e); }
+  }
+
   // Realtime Michael mic-gate hygiene (rt-8 / Pam rt-10 nit): the voice session
   // opens the mic permission gate by persisting realtimeVoiceEnabled=true and
   // closes it on disconnect — but a hard crash/reload mid-session skips that
