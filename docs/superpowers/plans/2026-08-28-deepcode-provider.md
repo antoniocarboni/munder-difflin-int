@@ -211,7 +211,7 @@ git commit -m "feat(deepcode): register DeepCode as a hive-aware hooks-bridge pr
 
 **Interfaces:**
 - Consumes: `bridgeOf`/`providerPreset` from Task 1 (`src/shared/agentProvider.ts`) — used only by the dispatch branch, not by `installDeepcodeSettings` itself, which takes plain parameters.
-- Produces: `HiveManager.installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void` (private method). Task 3 threads `model`/`autoMode` into `ensureAgent`'s options so this method receives real values at spawn time — `ensureAgent`'s options type gains `model?: string; autoMode: boolean;` in this task, since the dispatch branch that calls `installDeepcodeSettings` needs them from that same options object.
+- Produces: `HiveManager.installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void` (private method). `ensureAgent`'s options type gains `model?: string; autoMode?: boolean;` in this task (both optional, so this task's own typecheck passes standalone without needing Task 3's call-site change yet) — the dispatch branch defaults a missing `autoMode` to `true` (matching `HarnessConfig.autoMode`'s own default) before calling `installDeepcodeSettings`, which itself keeps a plain required `boolean` parameter. Task 3 later threads a REAL `autoMode`/`model` from the live config into this same options object, overriding the default.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -409,8 +409,10 @@ Find the existing dispatch line `if (desc.shim === 'agy') this.installAgyHooks()
 
 ```ts
 if (desc.shim === 'agy') this.installAgyHooks();
-if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode, opts.model);
+if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
 ```
+
+`?? true` matches `HarnessConfig.autoMode`'s own default (`src/main/config.ts`'s `DEFAULTS.autoMode: true`) — so a caller that doesn't yet pass `autoMode` (i.e., before Task 3 wires the real one through) gets the same default the rest of the app already assumes, rather than an undefined-behaves-as-false surprise.
 
 This is inside `ensureAgent`, so `opts` here is `ensureAgent`'s own second parameter. Extend that parameter's inline type (currently spanning lines 614-637, ending with `extraWritableDirs?: string[];` before its closing `} = {}`) to add two new fields, right after `extraWritableDirs`:
 
@@ -423,12 +425,14 @@ This is inside `ensureAgent`, so `opts` here is `ensureAgent`'s own second param
       /** Mirrors the hive's global auto-mode toggle. Currently read only by
        *  the deepcode bridge install (permissions.defaultMode); every other
        *  provider's auto-mode behavior is still driven by its own CLI flag,
-       *  spliced in the renderer's buildSpawnCommand, unaffected by this. */
-      autoMode: boolean;
+       *  spliced in the renderer's buildSpawnCommand, unaffected by this.
+       *  Optional — undefined defaults to `true` at the one call site that
+       *  reads it (see the dispatch branch above), matching
+       *  HarnessConfig.autoMode's own default, so this task's own typecheck
+       *  passes without needing Task 3's call-site change first. */
+      autoMode?: boolean;
     } = {}
 ```
-
-Note `autoMode` here is NOT optional — Task 3's caller always provides it (`readConfig().autoMode`, which is itself a plain `boolean` on `HarnessConfig`), so there is no ambiguous "undefined means what?" case for the one bridge that reads it.
 
 - [ ] **Step 6: Run test to verify it passes**
 
@@ -438,7 +442,7 @@ Expected: PASS (6 tests)
 - [ ] **Step 7: Typecheck**
 
 Run: `npm run typecheck:node`
-Expected: exits 0 — this confirms every existing call site of `ensureAgent` (there is currently exactly one, in `src/main/index.ts`, touched in Task 3) still compiles once `autoMode` becomes a required field on the options object; if it does NOT yet compile because Task 3 hasn't run yet, that is expected at this point in the plan — Task 3 supplies it. Confirm the failure (if any) is exactly that missing field at the one known call site, not something else.
+Expected: exits 0 — both `model` and `autoMode` are optional additions to `ensureAgent`'s options type, so the existing call site in `src/main/index.ts` (unmodified until Task 3) keeps compiling exactly as it did before this task.
 
 - [ ] **Step 8: Commit**
 
@@ -458,7 +462,7 @@ git commit -m "feat(deepcode): add notify shim and per-agent settings.json bridg
 
 **Interfaces:**
 - Consumes: `HiveManager.installDeepcodeSettings` (Task 2), `AgentProviderPreset.modelDeliveredVia` (Task 1, referenced only in the spec's rationale — no code in this task actually branches on it, since the fix is "thread `model` through unconditionally; every non-deepcode provider already ignores an extra field it doesn't ask for").
-- Produces: nothing further downstream — this is the last task. `ensureAgent`'s now-required `autoMode` and optional `model` fields (Task 2) are satisfied by every call site this task touches.
+- Produces: nothing further downstream — this is the last task. `ensureAgent`'s optional `autoMode`/`model` fields (Task 2) get a real, live value from this task's call site, overriding Task 2's `?? true` default.
 
 This task is integration glue across several files, each edited identically in shape (thread one already-in-scope variable into one already-existing object literal) — no dedicated new unit test for the plumbing itself (mirrors how the previous feature's equivalent wiring task, Task 6 of the Obsidian vault sync plan, was verified by typecheck + full suite + a manual smoke test rather than a new test file). The plumbing's actual correctness is proven at the `hive.ts` boundary already, by Task 2's tests (`installDeepcodeSettings` receiving a real `model` value and writing it correctly) — this task's job is only to prove that value actually reaches that boundary from the UI, which typecheck (every `spawnPty` call is a typed object literal — an omitted required field or a typo'd key fails to compile) plus the manual smoke test cover.
 
