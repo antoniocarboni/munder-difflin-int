@@ -544,7 +544,16 @@ function withTriggerDefaults(cfg: HarnessConfig): HarnessConfig {
     orgTrigger: { ...DEFAULT_ORG_TRIGGER, ...cfg.orgTrigger },
     webhookTriggers: Array.isArray(cfg.webhookTriggers)
       ? cfg.webhookTriggers.map((t) => ({ ...t }))
-      : []
+      : [],
+    knowledgeGraph: {
+      ...DEFAULTS.knowledgeGraph,
+      ...cfg.knowledgeGraph,
+      vaultSync: {
+        ...(DEFAULTS.knowledgeGraph?.vaultSync ?? { enabled: false, projects: [] }),
+        ...cfg.knowledgeGraph?.vaultSync,
+        projects: [...(cfg.knowledgeGraph?.vaultSync?.projects ?? [])]
+      }
+    }
   };
 }
 

@@ -43,3 +43,14 @@ test('a vaultSync config round-trips through writeConfig/readConfig', () => {
   assert.equal(cfg.knowledgeGraph.vaultSync.vaultPath, '~/Documents/Obsidian/SecondBrain');
   assert.deepEqual(cfg.knowledgeGraph.vaultSync.projects, [mapping]);
 });
+
+test('a partial knowledgeGraph patch (like toggleKg) preserves vaultSync defaults', () => {
+  // Simulate Settings UI behavior: stage only {enabled: true} without vaultSync
+  writeConfig({
+    knowledgeGraph: { enabled: true }
+  });
+  const cfg = readConfig();
+  assert.equal(cfg.knowledgeGraph.enabled, true);
+  assert.equal(cfg.knowledgeGraph.vaultSync.enabled, false);
+  assert.deepEqual(cfg.knowledgeGraph.vaultSync.projects, []);
+});
