@@ -238,6 +238,60 @@ function ensureMineIgnore(agentDir: string): void {
   try { writeFileSync(path, prefix + missing.join('\n') + '\n', 'utf8'); } catch { /* best-effort */ }
 }
 
+/** Best-effort: resolve the real git "common dir" for `repoDir` — the directory
+ *  holding `info/exclude`, `refs/`, `objects/`, shared across every worktree of
+ *  a repo. Handles both a normal repo (`.git` is a directory) and a git
+ *  worktree (`.git` is a FILE containing `gitdir: <path>`, whose own
+ *  `commondir` file points, relatively, back to the shared common dir) —
+ *  this app defaults every isolated hive agent into its own worktree
+ *  (`ensureAgent`'s `isolate` option), so resolving only the plain-directory
+ *  case would silently no-op for the common spawn path. Returns null for
+ *  anything that doesn't look like a real git repo; never throws. */
+function resolveGitCommonDir(repoDir: string): string | null {
+  try {
+    const gitPath = join(repoDir, '.git');
+    if (!existsSync(gitPath)) return null;
+    let gitDir = gitPath;
+    if (!statSync(gitPath).isDirectory()) {
+      // Worktree pointer file: "gitdir: <path>".
+      const m = /^gitdir:\s*(.+)\s*$/m.exec(readFileSync(gitPath, 'utf8'));
+      if (!m) return null;
+      gitDir = m[1].trim();
+    }
+    const commondirFile = join(gitDir, 'commondir');
+    if (existsSync(commondirFile)) {
+      const rel = readFileSync(commondirFile, 'utf8').trim();
+      return rel ? join(gitDir, rel) : gitDir;
+    }
+    return gitDir;
+  } catch { return null; }
+}
+
+/** Best-effort: keep `.deepcode/` out of a real git repo's tracked history via
+ *  `.git/info/exclude` (resolved through `resolveGitCommonDir`, so this works
+ *  for a plain repo AND a hive worktree) — a PER-CLONE, LOCAL-ONLY ignore
+ *  mechanism that never touches a tracked `.gitignore` file in the user's
+ *  repo. Distinct from `ensureMineIgnore` above: that one writes inside the
+ *  HIVE's OWN bookkeeping directory, which the hive owns; this one writes
+ *  inside the USER's repository, where only a local, untracked-by-git ignore
+ *  is appropriate. Never throws — a `cwd` that isn't a real git repo (no
+ *  `.git` at all) is silently a no-op, same fail-open philosophy as every
+ *  other piece of the deepcode bridge. */
+function ensureDeepcodeSettingsExcluded(cwd: string): void {
+  try {
+    const commonDir = resolveGitCommonDir(cwd);
+    if (!commonDir) return;
+    const excludePath = join(commonDir, 'info', 'exclude');
+    let existing = '';
+    try { if (existsSync(excludePath)) existing = readFileSync(excludePath, 'utf8'); } catch { existing = ''; }
+    const have = new Set(existing.split('\n').map((l) => l.trim()));
+    if (have.has('.deepcode/')) return;
+    mkdirSync(dirname(excludePath), { recursive: true });
+    const prefix = existing && !existing.endsWith('\n') ? existing + '\n' : existing;
+    writeFileSync(excludePath, prefix + '.deepcode/\n', 'utf8');
+  } catch { /* best-effort housekeeping only; never block a spawn over this */ }
+}
+
 /**
  * Strip secret-shaped substrings out of free text before it leaves the main
  * process toward the voice / renderer layer. This is the MAIN-SIDE privacy gate
@@ -1937,7 +1991,17 @@ export class HiveManager {
    *  hand-configured mcpServers block — is preserved untouched. Never throws:
    *  a missing/malformed existing file is treated as `{}`, and any write
    *  failure is logged and degrades to "spawns, but no live status" — the same
-   *  philosophy already used for the pi/opencode bridges. */
+   *  philosophy already used for the pi/opencode bridges.
+   *
+   *  NOTE — durable side effect: `permissions.defaultMode` is written into the
+   *  REPO's own project-level settings file, not hive-scoped state. It survives
+   *  after the hive stops touching this agent (and after the app closes) —
+   *  a spawn made while hive auto-mode was on leaves that repo's DeepCode
+   *  config at `allowAll` for every future run there, including the operator's
+   *  own manual `deepcode` invocations outside the hive entirely, because a
+   *  project-level `permissions` block wins outright over DeepCode's global
+   *  user-level config. This is a deliberate trade-off (see the spec), not a
+   *  bug, but it's a real one, worth knowing before changing this method. */
   private installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void {
     const root = this.root();
     if (!root) return;
@@ -1946,6 +2010,12 @@ export class HiveManager {
       mkdirSync(dirname(shimPath), { recursive: true });
       writeFileSync(shimPath, DEEPCODE_NOTIFY_SHIM, { mode: 0o755 });
     } catch (e) { console.error('[deepcode] could not write notify shim:', e); return; }
+
+    // Keep the settings file this method is about to write out of the repo's
+    // tracked history — see ensureDeepcodeSettingsExcluded's own doc comment.
+    // Best-effort/never-throws; a non-git cwd or a write failure here must
+    // never block the actual settings-file write below.
+    ensureDeepcodeSettingsExcluded(meta.cwd);
 
     const settingsPath = join(meta.cwd, '.deepcode', 'settings.json');
     let existing: Record<string, unknown> = {};
