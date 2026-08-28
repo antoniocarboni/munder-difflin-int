@@ -18,8 +18,15 @@ require.cache[electron] = {
 
 const { KnowledgeManager } = loadTs('src/main/knowledge.ts');
 const { runVaultSync } = loadTs('src/main/knowledgeVaultSync.ts');
+const { writeConfig, readConfig } = loadTs('src/main/config.ts');
+const { list: kgList, getDoc: kgGetDoc } = require('../src/main/kg-core.cjs');
 
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
+
+// Settle config.ts's one-shot migration before any test reads it — same
+// priming the other config-touching test files in this suite do.
+writeConfig({});
+readConfig();
 
 function makeVault() {
   const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'md-vault-'));
@@ -223,6 +230,116 @@ test('a transient read failure on an already-tracked, unchanged file does not cr
 
   const list = require('../src/main/kg-core.cjs').list(km.projectRoot('burdastyle'));
   assert.equal(list.length, 1, 'no duplicate doc for the file that had a transient read failure');
+
+  fs.rmSync(vaultPath, { recursive: true, force: true });
+});
+
+// Regression coverage for review finding 3: cross-project isolation is the
+// entire point of this feature. Nothing in the existing tests above (all
+// single-mapping) proves that syncing TWO mapped projects keeps their notes
+// in genuinely separate stores rather than a shared/filtered one.
+test('two mapped projects end up in fully isolated stores — cross-project isolation', async () => {
+  const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'md-vault-isolation-'));
+  const folderA = path.join(vaultPath, '01-Projects', 'ProjectA');
+  const folderB = path.join(vaultPath, '01-Projects', 'ProjectB');
+  fs.mkdirSync(folderA, { recursive: true });
+  fs.mkdirSync(folderB, { recursive: true });
+  fs.writeFileSync(path.join(folderA, 'note.md'), '# Project A Note\nDetails mentioning alpha-only-content.', 'utf8');
+  fs.writeFileSync(path.join(folderB, 'note.md'), '# Project B Note\nDetails mentioning bravo-only-content.', 'utf8');
+
+  const cfg = {
+    enabled: true,
+    vaultPath,
+    projects: [
+      { slug: 'project-a', repoOrigin: 'git@bitbucket.org:magenio/project-a.git', vaultFolder: '01-Projects/ProjectA' },
+      { slug: 'project-b', repoOrigin: 'git@bitbucket.org:magenio/project-b.git', vaultFolder: '01-Projects/ProjectB' }
+    ]
+  };
+
+  const km = new KnowledgeManager();
+  const result = await runVaultSync(cfg, km);
+  assert.equal(result.projects.length, 2);
+  for (const p of result.projects) assert.equal(p.errors.length, 0, `unexpected errors for ${p.slug}: ${p.errors.join('; ')}`);
+
+  const rootA = km.projectRoot('project-a');
+  const rootB = km.projectRoot('project-b');
+  assert.notEqual(rootA, rootB);
+
+  const listA = kgList(rootA);
+  const listB = kgList(rootB);
+  assert.equal(listA.length, 1);
+  assert.equal(listB.length, 1);
+
+  const textA = listA.map((m) => kgGetDoc(rootA, m.id).text).join('\n');
+  const textB = listB.map((m) => kgGetDoc(rootB, m.id).text).join('\n');
+  assert.match(textA, /alpha-only-content/);
+  assert.doesNotMatch(textA, /bravo-only-content/, "project A's store must not contain project B's content");
+  assert.match(textB, /bravo-only-content/);
+  assert.doesNotMatch(textB, /alpha-only-content/, "project B's store must not contain project A's content");
+
+  // env(slug) is the mechanism that actually hands an agent its KG_ROOT —
+  // confirm the two projects never resolve to the same one.
+  writeConfig({ knowledgeGraph: { enabled: true, vaultSync: { enabled: false, projects: [] } } });
+  const envKm = new KnowledgeManager();
+  assert.notEqual(envKm.env('project-a').KG_ROOT, envKm.env('project-b').KG_ROOT);
+  writeConfig({ knowledgeGraph: { enabled: false, vaultSync: { enabled: false, projects: [] } } });
+
+  fs.rmSync(vaultPath, { recursive: true, force: true });
+});
+
+// Regression coverage for review finding 3: a duplicate slug across two
+// mappings must never let either one touch the shared store — not to ingest,
+// not to prune — since which mapping the user actually intended can't be
+// known.
+test('a duplicate slug across two mappings skips both entirely — no ingest, no prune', async () => {
+  const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'md-vault-dupslug-'));
+  const folderA = path.join(vaultPath, '01-Projects', 'ProjectA');
+  const folderC = path.join(vaultPath, '01-Projects', 'ProjectC');
+  fs.mkdirSync(folderA, { recursive: true });
+  fs.mkdirSync(folderC, { recursive: true });
+  fs.writeFileSync(path.join(folderA, 'note.md'), '# Project A Note\nContent A.', 'utf8');
+  fs.writeFileSync(path.join(folderC, 'note.md'), '# Project C Note\nContent C.', 'utf8');
+
+  const km = new KnowledgeManager();
+  const sharedSlug = 'shared-slug';
+
+  // First, legitimately seed the shared store via a single, non-duplicated
+  // mapping — this is the pre-existing content that must NOT be pruned once
+  // the slug becomes duplicated below.
+  const seedResult = await runVaultSync({
+    enabled: true,
+    vaultPath,
+    projects: [{ slug: sharedSlug, repoOrigin: 'git@bitbucket.org:magenio/project-a.git', vaultFolder: '01-Projects/ProjectA' }]
+  }, km);
+  assert.equal(seedResult.projects[0].errors.length, 0);
+  assert.equal(seedResult.projects[0].added, 1);
+  assert.equal(kgList(km.projectRoot(sharedSlug)).length, 1);
+
+  // Now introduce a second mapping that accidentally reuses the same slug.
+  const dupCfg = {
+    enabled: true,
+    vaultPath,
+    projects: [
+      { slug: sharedSlug, repoOrigin: 'git@bitbucket.org:magenio/project-a.git', vaultFolder: '01-Projects/ProjectA' },
+      { slug: sharedSlug, repoOrigin: 'git@bitbucket.org:magenio/project-c.git', vaultFolder: '01-Projects/ProjectC' }
+    ]
+  };
+  const result = await runVaultSync(dupCfg, km);
+
+  assert.equal(result.projects.length, 2);
+  for (const p of result.projects) {
+    assert.equal(p.errors.length, 1, `${p.slug} should be recorded as errored`);
+    assert.match(p.errors[0], /duplicate slug/i);
+    assert.equal(p.added, 0);
+    assert.equal(p.updated, 0);
+    assert.equal(p.removed, 0);
+  }
+
+  // The pre-existing doc must survive untouched — neither mapping was
+  // allowed to prune it, and neither ingested project C's note into it.
+  const finalList = kgList(km.projectRoot(sharedSlug));
+  assert.equal(finalList.length, 1, 'the shared store must be untouched — no ingest, no prune');
+  assert.match(kgGetDoc(km.projectRoot(sharedSlug), finalList[0].id).text, /Content A/);
 
   fs.rmSync(vaultPath, { recursive: true, force: true });
 });
