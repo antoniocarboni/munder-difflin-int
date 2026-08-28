@@ -116,8 +116,13 @@ export async function runVaultSync(
       result.errors.push(`mapped folder not found: ${folder}`);
       continue;
     }
-    if (!statSync(folder).isDirectory()) {
-      result.errors.push(`mapped path is not a directory: ${folder}`);
+    try {
+      if (!statSync(folder).isDirectory()) {
+        result.errors.push(`mapped path is not a directory: ${folder}`);
+        continue;
+      }
+    } catch (e) {
+      result.errors.push(`could not stat ${folder}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
 
@@ -156,6 +161,12 @@ export async function runVaultSync(
         if (prev) result.updated++; else result.added++;
       } catch (e) {
         result.errors.push(`${relPath}: ${e instanceof Error ? e.message : String(e)}`);
+        // A transient failure on a file that was already tracked must not
+        // drop its state: without this, the next run would see no prevState
+        // entry for it, treat the (unchanged) file as brand-new, and
+        // ingestFileInto it again without a prior removeDocFrom — producing
+        // a duplicate doc for content that never actually changed.
+        if (prevState[relPath]) nextState[relPath] = prevState[relPath];
       }
     }
 
