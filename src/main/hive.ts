@@ -634,6 +634,19 @@ export class HiveManager {
        *  MemPalace dir, which `mempalace` mutates). Absolute paths; ignored
        *  for providers without a sandbox. */
       extraWritableDirs?: string[];
+      /** Chosen model for a provider whose model has no CLI flag (currently
+       *  only 'deepcode') — written into that provider's own settings file
+       *  instead of spliced onto argv. Ignored by every other provider. */
+      model?: string;
+      /** Mirrors the hive's global auto-mode toggle. Currently read only by
+       *  the deepcode bridge install (permissions.defaultMode); every other
+       *  provider's auto-mode behavior is still driven by its own CLI flag,
+       *  spliced in the renderer's buildSpawnCommand, unaffected by this.
+       *  Optional — undefined defaults to `true` at the one call site that
+       *  reads it (see the dispatch branch above), matching
+       *  HarnessConfig.autoMode's own default, so this task's own typecheck
+       *  passes without needing Task 3's call-site change first. */
+      autoMode?: boolean;
     } = {}
   ): Promise<SpawnInjection> {
     const root = this.root();
@@ -772,6 +785,7 @@ export class HiveManager {
         try {
           if (desc.kind === 'hooks') {
             if (desc.shim === 'agy') this.installAgyHooks();
+            if (desc.shim === 'deepcode') this.installDeepcodeSettings(meta, opts.autoMode ?? true, opts.model);
             else if (desc.shim === 'codex') {
               env.CODEX_HOME = this.installCodexHooks(dir, meta.id);
               // Codex refuses to run hooks from a config dir without persisted
@@ -1909,6 +1923,49 @@ export class HiveManager {
     }
   }
 
+  /** Write (once) the deepcode-notify shim, then merge this agent's OWN
+   *  `.deepcode/settings.json` (project-level, scoped by its own cwd — no
+   *  CODEX_HOME-style isolation needed) with exactly three fields: `notify`
+   *  (the shim path), `permissions.defaultMode` (mirrors hive auto mode:
+   *  'allowAll' when on, 'askAll' when off — DeepCode itself defaults to
+   *  allowAll regardless, so an explicit write is the only way "auto mode off"
+   *  means anything for this provider), and `env.MODEL` (only when the operator
+   *  picked one). Everything else already in the file — API key, BASE_URL, a
+   *  hand-configured mcpServers block — is preserved untouched. Never throws:
+   *  a missing/malformed existing file is treated as `{}`, and any write
+   *  failure is logged and degrades to "spawns, but no live status" — the same
+   *  philosophy already used for the pi/opencode bridges. */
+  installDeepcodeSettings(meta: AgentMeta, autoMode: boolean, model?: string): void {
+    const root = this.root();
+    if (!root) return;
+    const shimPath = join(root, 'bin', 'deepcode-notify.cjs');
+    try {
+      if (!existsSync(shimPath)) {
+        mkdirSync(dirname(shimPath), { recursive: true });
+        writeFileSync(shimPath, DEEPCODE_NOTIFY_SHIM, { mode: 0o755 });
+      }
+    } catch (e) { console.error('[deepcode] could not write notify shim:', e); return; }
+
+    const settingsPath = join(meta.cwd, '.deepcode', 'settings.json');
+    let existing: Record<string, unknown> = {};
+    try {
+      if (existsSync(settingsPath)) existing = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    } catch { existing = {}; }
+    const merged = {
+      ...existing,
+      notify: shimPath,
+      permissions: {
+        ...(typeof existing.permissions === 'object' && existing.permissions ? existing.permissions : {}),
+        defaultMode: autoMode ? 'allowAll' : 'askAll'
+      },
+      ...(model ? { env: { ...(typeof existing.env === 'object' && existing.env ? existing.env : {}), MODEL: model } } : {})
+    };
+    try {
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
+    } catch (e) { console.error('[deepcode] could not write project settings.json:', e); }
+  }
+
   /** Official Google Gemini CLI lifecycle bridge. Gemini's hook payload is
    *  already snake_case; the shim maps event names into HookServer's common
    *  vocabulary and translates deny/steering replies back to Gemini.
@@ -2873,6 +2930,32 @@ process.stdin.on('end', () => {
     setTimeout(() => process.exit(0), 5000).unref();
   } catch (_) { process.exit(0); }
 });
+`;
+
+// ─── deepcode-notify shim (written to <hive>/bin/deepcode-notify.cjs) ────────
+// DeepCode's `notify` hook fires ONCE per completed/failed turn (not per tool
+// call) and hands context via ENV VARS, not stdin — the simplest bridge shape
+// in this family: no request to parse, no response DeepCode reads back (notify
+// is fire-and-forget, unlike Claude/agy's hook responses which can allow/deny
+// a tool call). This just posts one Stop-shaped HIVE_SOCK payload per turn.
+const DEEPCODE_NOTIFY_SHIM = `#!/usr/bin/env node
+'use strict';
+const net = require('net');
+const sock = process.env.HIVE_SOCK;
+const agentId = process.env.AGENT_ID || null;
+if (!agentId || !sock) process.exit(0); // not a hive worker → no-op
+const payload = {
+  hook_event_name: 'Stop',
+  agent_id: agentId,
+  status: process.env.STATUS || null,
+  fail_reason: process.env.FAIL_REASON || null
+};
+try {
+  const c = net.createConnection(sock, () => { c.end(JSON.stringify(payload) + '\\n'); });
+  c.on('error', () => {});
+  c.on('close', () => process.exit(0));
+  setTimeout(() => process.exit(0), 3000).unref();
+} catch (_) { process.exit(0); }
 `;
 
 // ─── pi bridge extension (written to <agentDir>/.pi-agent/extensions/) ───────
