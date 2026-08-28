@@ -13,10 +13,18 @@ import type { VaultProjectMapping } from './config';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { join, relative } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
 import type { VaultSyncConfig } from './config';
 import type { KnowledgeManager } from './knowledge';
 import { expandTilde } from './fs';
+
+/** Vault-sync project slug shape: same convention as the codebase's other
+ *  slug type (`INTEGRATION_SLUG_RE` in `src/shared/integrations.ts`) —
+ *  lowercase alphanumeric + hyphens, no leading/trailing hyphen, 2-40 chars.
+ *  A slug becomes a literal filesystem directory name
+ *  (`<userData>/knowledge/projects/<slug>/`, see `KnowledgeManager.projectRoot`),
+ *  so this also rules out path-traversal segments like `..` or `/`. */
+const PROJECT_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
 /** Which mapped project (if any) does this agent's working directory belong
  *  to? Matched by git `origin`, never by filesystem path — a worktree's path
@@ -107,14 +115,48 @@ export async function runVaultSync(
 ): Promise<VaultSyncResult> {
   const projects: VaultSyncProjectResult[] = [];
   const vaultPath = cfg.vaultPath ? expandTilde(cfg.vaultPath) : '';
+  const allMappings = cfg.projects ?? [];
 
-  for (const mapping of cfg.projects ?? []) {
+  // A slug becomes a literal filesystem directory name
+  // (`<userData>/knowledge/projects/<slug>/`). Two mappings sharing a slug
+  // would resolve to the SAME store directory: one project's sync pass would
+  // read the other's `.vault-sync-state.json` as its own prevState, fail to
+  // recognize the other's files as "seen", and prune them — a cross-client
+  // data-isolation failure in the one feature whose entire purpose is
+  // preventing exactly that. Detect duplicates up front, across ALL mappings,
+  // before any of them touch a store — never let one "win" the shared
+  // directory while another is silently skipped, since which one the user
+  // actually intended can't be known.
+  const slugCounts = new Map<string, number>();
+  for (const m of allMappings) slugCounts.set(m.slug, (slugCounts.get(m.slug) ?? 0) + 1);
+
+  for (const mapping of allMappings) {
     const result: VaultSyncProjectResult = { slug: mapping.slug, added: 0, updated: 0, removed: 0, errors: [] };
     projects.push(result);
+
+    if (!PROJECT_SLUG_RE.test(mapping.slug)) {
+      result.errors.push(`invalid slug format: "${mapping.slug}" (expected lowercase alphanumeric + hyphens, 2-40 chars, no leading/trailing hyphen)`);
+      continue;
+    }
+    if ((slugCounts.get(mapping.slug) ?? 0) > 1) {
+      result.errors.push(`duplicate slug also used by another mapping: "${mapping.slug}"`);
+      continue;
+    }
 
     const folder = join(vaultPath, mapping.vaultFolder);
     if (!vaultPath || !existsSync(folder)) {
       result.errors.push(`mapped folder not found: ${folder}`);
+      continue;
+    }
+    // Containment check: `vaultFolder` comes from hand-edited config, so
+    // confirm the resolved mapped folder actually stays inside the resolved
+    // vault path before treating it as safe to read/ingest. The trailing
+    // `sep` on the prefix avoids a false-positive prefix match (e.g.
+    // `/vault-extra` incorrectly "starting with" `/vault`).
+    const resolvedVaultPath = resolve(vaultPath);
+    const resolvedFolder = resolve(folder);
+    if (resolvedFolder !== resolvedVaultPath && !resolvedFolder.startsWith(resolvedVaultPath + sep)) {
+      result.errors.push(`mapped folder escapes vault path: ${folder}`);
       continue;
     }
     try {
