@@ -305,8 +305,15 @@ require.cache[electron] = {
 };
 
 const { KnowledgeManager } = loadTs('src/main/knowledge.ts');
+const { writeConfig, readConfig } = loadTs('src/main/config.ts');
 
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
+
+// Settle config.ts's one-shot migration before any test reads it — same
+// priming Task 1's config test and the existing config-write-notify.test.cjs
+// already do; skipping it leaves the first read's shape undefined.
+writeConfig({});
+readConfig();
 
 test('projectRoot is a subfolder of userData/knowledge/projects, distinct from the global root', () => {
   const km = new KnowledgeManager();
@@ -315,13 +322,25 @@ test('projectRoot is a subfolder of userData/knowledge/projects, distinct from t
   assert.notEqual(projRoot, km.root());
 });
 
-test('env(slug) points KG_ROOT at the project store; env() with no slug keeps today\'s global-store behavior', () => {
+test('env() is empty when the feature is off (default)', () => {
   const km = new KnowledgeManager();
-  // active() reads knowledgeGraph.enabled from config — mock readConfig's
-  // backing file by writing one directly via config.ts in a real scenario;
-  // here we exercise the disabled-by-default path first.
   assert.deepEqual(km.env(), {});
   assert.deepEqual(km.env('burdastyle'), {});
+});
+
+test('env(slug) points KG_ROOT at the project store when active; env() with no slug keeps the global store', () => {
+  writeConfig({ knowledgeGraph: { enabled: true, vaultSync: { enabled: false, projects: [] } } });
+  const km = new KnowledgeManager();
+  const projectEnv = km.env('burdastyle');
+  assert.equal(projectEnv.KG_ROOT, km.projectRoot('burdastyle'));
+  assert.ok(projectEnv.KG_CLI);
+  assert.ok(projectEnv.KG_CORE);
+
+  const globalEnv = km.env();
+  assert.equal(globalEnv.KG_ROOT, km.root());
+  assert.notEqual(globalEnv.KG_ROOT, projectEnv.KG_ROOT);
+
+  writeConfig({ knowledgeGraph: { enabled: false, vaultSync: { enabled: false, projects: [] } } });
 });
 
 test('ingestFileInto writes into the given root, not the global root; removeDocFrom removes it from that same root', () => {
@@ -397,7 +416,7 @@ Add `ingestFileInto` and `removeDocFrom` right after the existing `ingestFile`/`
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/knowledge-manager-project-store.test.cjs`
-Expected: PASS (3 tests)
+Expected: PASS (4 tests)
 
 - [ ] **Step 5: Typecheck**
 
