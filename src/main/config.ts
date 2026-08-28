@@ -170,6 +170,36 @@ export interface KnowledgeGraphConfig {
   enabled?: boolean;
   /** Override the store location. Unset = <userData>/knowledge. */
   rootPath?: string;
+  vaultSync?: VaultSyncConfig;
+}
+
+/** One Obsidian project folder mapped to a munder-difflin repo. Matched to an
+ *  agent by git `origin`, never by filesystem path (a worktree's path differs
+ *  from its parent repo; its origin does not). */
+export interface VaultProjectMapping {
+  /** Stable id — becomes the `<userData>/knowledge/projects/<slug>/` folder
+   *  name. Free-form but should be filesystem-safe; not required to match
+   *  either the repo folder name or the vault folder name (both differ in
+   *  practice). */
+  slug: string;
+  /** `git remote get-url origin` output for the target repo, verbatim. */
+  repoOrigin: string;
+  /** Path to this project's notes, relative to `vaultSync.vaultPath` — e.g.
+   *  "01-Projects/BurdaStyle". */
+  vaultFolder: string;
+}
+
+/** Daily sync from an Obsidian vault into per-project Knowledge Graph stores.
+ *  Additive to the existing global `knowledgeGraph.rootPath` store — never
+ *  touches it. Opt-in: `enabled` false is a full no-op (no scan, no timer). */
+export interface VaultSyncConfig {
+  enabled?: boolean;
+  /** Absolute path to the vault root, e.g. "~/Documents/Obsidian/SecondBrain". */
+  vaultPath?: string;
+  projects?: VaultProjectMapping[];
+  /** Epoch ms of the last completed run (partial or full). Used to decide
+   *  whether a day has elapsed since app start. */
+  lastSyncAt?: number;
 }
 
 export interface HarnessConfig {
@@ -482,7 +512,7 @@ const DEFAULTS: HarnessConfig = {
   // v0.3.4 fix: default OFF, matching the field's own documentation ("Default
   // OFF / dark until enabled") — the true default contradicted it. Existing
   // installs keep their persisted value.
-  knowledgeGraph: { enabled: false }
+  knowledgeGraph: { enabled: false, vaultSync: { enabled: false, projects: [] } }
 };
 
 function configPath(): string {
@@ -514,7 +544,16 @@ function withTriggerDefaults(cfg: HarnessConfig): HarnessConfig {
     orgTrigger: { ...DEFAULT_ORG_TRIGGER, ...cfg.orgTrigger },
     webhookTriggers: Array.isArray(cfg.webhookTriggers)
       ? cfg.webhookTriggers.map((t) => ({ ...t }))
-      : []
+      : [],
+    knowledgeGraph: {
+      ...DEFAULTS.knowledgeGraph,
+      ...cfg.knowledgeGraph,
+      vaultSync: {
+        ...(DEFAULTS.knowledgeGraph?.vaultSync ?? { enabled: false, projects: [] }),
+        ...cfg.knowledgeGraph?.vaultSync,
+        projects: [...(cfg.knowledgeGraph?.vaultSync?.projects ?? [])]
+      }
+    }
   };
 }
 
@@ -678,6 +717,22 @@ export function writeConfig(patch: Partial<HarnessConfig>): HarnessConfig {
     const { home, recentHives } = normalizeHiveHome(patch.harnessHome, current.recentHives ?? []);
     next.harnessHome = home;
     next.recentHives = recentHives;
+  }
+  // `writeConfig` merges one level deep, so a PARTIAL `knowledgeGraph` patch
+  // (e.g. the pre-existing Settings toggle sending only `{ enabled }`) would
+  // otherwise wipe `knowledgeGraph.vaultSync` — including the user's
+  // configured `vaultPath`/`projects` — from disk. Deep-fill `vaultSync` here
+  // the same way `withTriggerDefaults` deep-fills it on the read side: a
+  // patch that omits `vaultSync` preserves the current one; a patch that DOES
+  // include `vaultSync` fully replaces it at that level (matching
+  // `withTriggerDefaults`'s own "a patched `projects` array replaces, it
+  // doesn't element-wise merge" semantics).
+  if (patch.knowledgeGraph) {
+    next.knowledgeGraph = {
+      ...current.knowledgeGraph,
+      ...patch.knowledgeGraph,
+      vaultSync: { ...current.knowledgeGraph?.vaultSync, ...patch.knowledgeGraph.vaultSync }
+    };
   }
   return persistConfig(next);
 }

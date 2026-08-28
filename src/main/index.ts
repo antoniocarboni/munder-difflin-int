@@ -30,6 +30,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import type { UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
+import { resolveProjectForCwd, runVaultSync } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
 import { PersistStore } from './db';
 import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
@@ -1995,6 +1996,50 @@ function stopWebhookDoneObserver(): void {
   webhookOutboundRecorded = null;
 }
 
+// ─── Obsidian vault → per-project Knowledge Graph sync ───────────────────────
+const VAULT_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let vaultSyncTimer: ReturnType<typeof setInterval> | null = null;
+let vaultSyncInFlight = false;
+
+async function runVaultSyncTick(): Promise<void> {
+  if (vaultSyncInFlight) return;
+  const kg = readConfig().knowledgeGraph;
+  if (!kg?.enabled || !kg.vaultSync?.enabled) return;
+  vaultSyncInFlight = true;
+  try {
+    const result = await runVaultSync(kg.vaultSync, knowledge);
+    for (const p of result.projects) {
+      if (p.errors.length) console.error(`[vault-sync] ${p.slug}: ${p.errors.join('; ')}`);
+    }
+    // Re-read fresh here rather than reusing `kg` captured at function entry:
+    // runVaultSync now actually yields to the event loop (per-file), so a user
+    // could toggle the feature off in Settings while a sync is mid-run. Writing
+    // back the stale `kg` snapshot would silently revert that change.
+    const freshKg = readConfig().knowledgeGraph;
+    writeConfig({ knowledgeGraph: { ...freshKg, vaultSync: { ...freshKg?.vaultSync, lastSyncAt: Date.now() } } });
+  } catch (e) {
+    console.error('[vault-sync] run failed:', e instanceof Error ? e.message : e);
+  } finally {
+    vaultSyncInFlight = false;
+  }
+}
+
+/** Start the daily vault-sync timer (idempotent). Runs once immediately if a
+ *  day has elapsed since the last run — covers "the app was closed all day,
+ *  catch up now" — then every 24h while the app stays open. A no-op call when
+ *  the feature is off (each tick re-checks the flags itself). */
+function startVaultSyncTimer(): void {
+  if (vaultSyncTimer) return;
+  const cfg = readConfig();
+  const last = cfg.knowledgeGraph?.vaultSync?.lastSyncAt ?? 0;
+  if (Date.now() - last > VAULT_SYNC_INTERVAL_MS) void runVaultSyncTick();
+  vaultSyncTimer = setInterval(() => { void runVaultSyncTick(); }, VAULT_SYNC_INTERVAL_MS);
+}
+
+function stopVaultSyncTimer(): void {
+  if (vaultSyncTimer) { clearInterval(vaultSyncTimer); vaultSyncTimer = null; }
+}
+
 /** Build the shared WebhookServer from the enabled endpoints and start it. A
  *  server that is already up is RE-POINTED rather than restarted (see
  *  `reconcileWebhookServer`): restarting would mint a fresh tunnel URL and break
@@ -2712,7 +2757,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
       if (inj.degraded) breakerToast('Agent running degraded', inj.degraded);
       // Point the agent's mempalace CLI at the shared palace + the `kg` CLI at the
       // enterprise knowledge store (both no-ops / empty when their flags are off).
-      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env() };
+      // A resolved vault-sync project mapping points KG_ROOT at that project's
+      // ISOLATED store instead of the global one (resolveProjectForCwd matches by
+      // git origin, never by path — see knowledgeVaultSync.ts); unresolved or the
+      // feature off both fall back to null → today's global-store behaviour.
+      const vaultSyncCfg = readConfig().knowledgeGraph?.vaultSync;
+      const projectSlug = vaultSyncCfg?.enabled
+        ? (await resolveProjectForCwd(opts.cwd, vaultSyncCfg.projects ?? []))?.slug ?? null
+        : null;
+      opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env(projectSlug) };
     } catch (e) {
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
@@ -3680,6 +3733,7 @@ function teardownAndQuit(): void {
   try { clearMissionTimers(); } catch (e) { console.error('[quit] clearMissionTimers:', e); }
   try { clearContextTimers(); } catch (e) { console.error('[quit] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[quit] stopWebhookDoneObserver:', e); }
+  try { stopVaultSyncTimer(); } catch (e) { console.error('[quit] stopVaultSyncTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[quit] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[quit] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[quit] stopRouter:', e); }
@@ -3741,6 +3795,7 @@ ipcMain.handle('app:resetAll', () => {
   try { clearMissionTimers(); } catch (e) { console.error('[reset] clearMissionTimers:', e); }
   try { clearContextTimers(); } catch (e) { console.error('[reset] clearContextTimers:', e); }
   try { stopWebhookDoneObserver(); } catch (e) { console.error('[reset] stopWebhookDoneObserver:', e); }
+  try { stopVaultSyncTimer(); } catch (e) { console.error('[reset] stopVaultSyncTimer:', e); }
   try { stopEphemeralWorkerWatcher(); } catch (e) { console.error('[reset] stopWorkerWatcher:', e); }
   try { integrationBroker.stop(); } catch (e) { console.error('[reset] broker.stop:', e); }
   try { hive.stopRouter(); } catch (e) { console.error('[reset] stopRouter:', e); }
@@ -5221,6 +5276,12 @@ app.whenReady().then(() => {
   initAutoUpdater(() => liveWebContents());
   // Bootstrap the hive (if harnessHome is configured) and start the message router.
   bootstrapHiveServices();
+  // Obsidian vault → per-project Knowledge Graph sync. Deliberately NOT inside
+  // bootstrapHiveServices(): that function no-ops without a configured
+  // harnessHome/hive, but vault sync is an independent feature gated only on
+  // its own config flags (re-checked every tick) — it must run even for an
+  // install that has never touched the hive.
+  startVaultSyncTimer();
   // Survive sleep/lock. macOS freezes libuv timers during true system sleep, so a
   // locked/idle/slept Mac stops firing schedules and can wedge PTYs. On wake we
   // re-arm the scheduler (catching up missed missions ONCE) + beats + keep-awake,
