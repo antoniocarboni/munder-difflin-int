@@ -144,6 +144,18 @@ export async function isRepo(cwd: string): Promise<boolean> {
   return res.ok && res.stdout.trim() === 'true';
 }
 
+/** The `origin` remote's URL (or another remote's, if named), verbatim as git
+ *  reports it. `cwd` may be a linked worktree — git resolves remotes through to
+ *  the main repo transparently, so this needs no special-casing. Returns null
+ *  when there is no such remote, `cwd` isn't a git repo, or git is unavailable —
+ *  never throws (fails closed for callers matching against a known-good URL). */
+export async function getRemoteUrl(cwd: string, remote = 'origin'): Promise<string | null> {
+  const res = await runGit(cwd, ['remote', 'get-url', remote]);
+  if (!res.ok) return null;
+  const url = res.stdout.trim();
+  return url || null;
+}
+
 const MAX_DIFF_BYTES = 2 * 1024 * 1024; // 2 MB — keep the diff view responsive
 
 /** A file's two sides for a working-tree-vs-HEAD diff. `head` is the committed
