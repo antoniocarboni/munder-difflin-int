@@ -2011,7 +2011,12 @@ async function runVaultSyncTick(): Promise<void> {
     for (const p of result.projects) {
       if (p.errors.length) console.error(`[vault-sync] ${p.slug}: ${p.errors.join('; ')}`);
     }
-    writeConfig({ knowledgeGraph: { ...kg, vaultSync: { ...kg.vaultSync, lastSyncAt: Date.now() } } });
+    // Re-read fresh here rather than reusing `kg` captured at function entry:
+    // runVaultSync now actually yields to the event loop (per-file), so a user
+    // could toggle the feature off in Settings while a sync is mid-run. Writing
+    // back the stale `kg` snapshot would silently revert that change.
+    const freshKg = readConfig().knowledgeGraph;
+    writeConfig({ knowledgeGraph: { ...freshKg, vaultSync: { ...freshKg?.vaultSync, lastSyncAt: Date.now() } } });
   } catch (e) {
     console.error('[vault-sync] run failed:', e instanceof Error ? e.message : e);
   } finally {

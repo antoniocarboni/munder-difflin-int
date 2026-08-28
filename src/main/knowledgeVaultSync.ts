@@ -11,6 +11,7 @@
 import { getRemoteUrl } from './git';
 import type { VaultProjectMapping } from './config';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, relative } from 'node:path';
 import type { VaultSyncConfig } from './config';
@@ -143,7 +144,7 @@ export async function runVaultSync(
       const relPath = relative(folder, filePath);
       seenRelPaths.add(relPath);
       try {
-        const content = readFileSync(filePath, 'utf8');
+        const content = await readFile(filePath, 'utf8');
         const hash = sha256Of(content);
         const prev = prevState[relPath];
         if (prev && prev.sha256 === hash) {
@@ -167,6 +168,16 @@ export async function runVaultSync(
         // ingestFileInto it again without a prior removeDocFrom — producing
         // a duplicate doc for content that never actually changed.
         if (prevState[relPath]) nextState[relPath] = prevState[relPath];
+      } finally {
+        // `runVaultSync` is invoked unconditionally at app.whenReady() on first
+        // enable, and every file's read/hash/ingest below is synchronous work
+        // (kg-core's ingest/removeDoc do writeFileSync/appendFileSync,
+        // including a full index.jsonl rewrite per removeDoc). Without a yield
+        // here, a large first sync blocks the whole Electron main process —
+        // UI, PTY output, IPC — for its entire duration. Yielding once per
+        // file caps any single blocking stretch to roughly one file's worth of
+        // synchronous work, regardless of which branch above ran.
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
 

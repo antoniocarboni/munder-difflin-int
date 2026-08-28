@@ -189,21 +189,25 @@ test('a transient read failure on an already-tracked, unchanged file does not cr
   const first = await runVaultSync(cfgFor(vaultPath), km);
   assert.equal(first.projects[0].added, 1);
 
-  const originalReadFileSync = fs.readFileSync;
+  // The per-file read in runVaultSync uses node:fs/promises's readFile (not
+  // fs.readFileSync — that stayed sync only for the one-shot sync-state file),
+  // so the transient failure has to be injected there.
+  const fsPromises = require('node:fs/promises');
+  const originalReadFile = fsPromises.readFile;
   let failedOnce = false;
-  fs.readFileSync = (p, ...rest) => {
+  fsPromises.readFile = (p, ...rest) => {
     if (p === notePath && !failedOnce) {
       failedOnce = true;
-      throw Object.assign(new Error(`EACCES: permission denied, open '${notePath}'`), { code: 'EACCES' });
+      return Promise.reject(Object.assign(new Error(`EACCES: permission denied, open '${notePath}'`), { code: 'EACCES' }));
     }
-    return originalReadFileSync(p, ...rest);
+    return originalReadFile(p, ...rest);
   };
 
   let second;
   try {
     second = await runVaultSync(cfgFor(vaultPath), km);
   } finally {
-    fs.readFileSync = originalReadFileSync;
+    fsPromises.readFile = originalReadFile;
   }
 
   assert.equal(second.projects[0].errors.length, 1);
