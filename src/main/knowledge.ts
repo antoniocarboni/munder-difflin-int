@@ -62,6 +62,14 @@ export class KnowledgeManager {
     return join(app.getPath('userData'), 'knowledge');
   }
 
+  /** The store directory for one project's isolated vault-sync store — always
+   *  `<userData>/knowledge/projects/<slug>/`, regardless of any `rootPath`
+   *  override (that override only ever applies to the global manual store).
+   *  Purely additive: the global store this method sits next to is untouched. */
+  projectRoot(slug: string): string {
+    return join(app.getPath('userData'), 'knowledge', 'projects', slug);
+  }
+
   /** Absolute path to the agent CLI (dev: repo resources/; packaged: resourcesPath). */
   private cliPath(): string {
     return app.isPackaged
@@ -76,11 +84,16 @@ export class KnowledgeManager {
       : join(app.getAppPath(), 'src', 'main', 'kg-core.cjs');
   }
 
-  /** Env merged into each agent's spawn so its `kg` CLI hits this store. Empty
-   *  when off — so a default install injects nothing (zero behaviour change). */
-  env(): Record<string, string> {
+  /** Env merged into an agent's spawn so its `kg` CLI hits the right store.
+   *  Empty when the feature is off — zero behaviour change for a default
+   *  install. `projectSlug`, when given and the feature is on, points
+   *  `KG_ROOT` at that project's ISOLATED store instead of the global one —
+   *  an agent gets exactly one store, never both. Omit (or pass a project
+   *  that didn't resolve) to keep today's global-store behaviour exactly. */
+  env(projectSlug?: string | null): Record<string, string> {
     if (!this.active()) return {};
-    return { KG_ROOT: this.root(), KG_CLI: this.cliPath(), KG_CORE: this.corePath() };
+    const root = projectSlug ? this.projectRoot(projectSlug) : this.root();
+    return { KG_ROOT: root, KG_CLI: this.cliPath(), KG_CORE: this.corePath() };
   }
 
   status(): KnowledgeStatus {
@@ -100,6 +113,18 @@ export class KnowledgeManager {
   /** Ingest inline text (e.g. pasted content). */
   ingestText(text: string, opts: { title?: string; tags?: string[] } = {}) {
     return core.ingest(this.root(), { text, ...opts });
+  }
+
+  /** Like `ingestFile`, but targets an explicit `root` instead of the implicit
+   *  global `this.root()` — used by the vault-sync job to write into a
+   *  project's own isolated store. */
+  ingestFileInto(root: string, srcPath: string, opts: { title?: string; tags?: string[]; caption?: string } = {}) {
+    return core.ingest(root, { srcPath, ...opts });
+  }
+
+  /** Like removing from the global store, but targets an explicit `root`. */
+  removeDocFrom(root: string, docId: string): boolean {
+    return core.removeDoc(root, docId);
   }
 
   search(query: string, limit?: number): KgHit[] {
