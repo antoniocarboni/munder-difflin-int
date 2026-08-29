@@ -383,7 +383,11 @@ const liveWorkers = new Map<string, WorkerRec>();
  *  granted a per-worker capability token at spawn (revoked in teardownPty). */
 const integrationBroker = new IntegrationBroker({
   getRecord: integrations.getRecord,
-  getSecret: integrations.getSecret
+  getSecret: integrations.getSecret,
+  getJiraBindings: () => ({
+    bindings: jiraProjects.listBindings().filter((b) => b.enabled),
+    poll: readConfig().jiraPoll
+  })
 });
 
 /** BYOK backend model-providers whose API keys the non-Claude CLI engines

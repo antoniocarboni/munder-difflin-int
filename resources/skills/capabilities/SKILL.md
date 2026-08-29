@@ -99,6 +99,12 @@ on one):
 - **MCP integrations** (filesystem, git, and others) come pre-wired into your
   session settings when enabled; invoke them as normal tools. The set is gated
   by the hive's consent configuration.
+- **Jira project bindings** (if you're the orchestrator running the Jira claim
+  poll). `GET /jira-bindings` on the same loopback broker returns
+  `{ bindings: [{key, repo, baseBranch, agents}], poll: {pollIntervalMs,
+  assigneeFilter, statusFilter} }` — the active Jira project ↔ repo ↔ agent
+  map, config-backed, no file to read. Any valid broker token can call it
+  (it's config data, not a credentialed integration proxy).
 
 As additional brokered integrations land (calendar, mail, docs, web fetch, …),
 they follow the same shape: a brokered, credential-free call discoverable at run
