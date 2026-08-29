@@ -15,7 +15,7 @@ import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
-  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
+  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
@@ -932,6 +932,18 @@ function ensureDefaultMissions(): void {
       heartbeatSeeded: true
     });
   }
+  // Seed the Jira claim poll once. Shipped DISABLED (like the heartbeat) — it
+  // makes Jira transitions and creates kanban cards, so the user opts in from
+  // the Schedules panel once bindings are configured.
+  const cfg3 = readConfig();
+  if (!cfg3.jiraPollSeeded) {
+    const missions = cfg3.missions ?? [];
+    const has = missions.some((m) => m.id === JIRA_POLL_MISSION.id);
+    writeConfig({
+      missions: has ? missions : [...missions, { ...JIRA_POLL_MISSION, lastFiredAt: Date.now() }],
+      jiraPollSeeded: true
+    });
+  }
 
   // maint-1 RETIREMENT: `compact-maintenance` is no longer a mission. Scheduled
   // compaction is now the CONTEXT TRIGGER's job, so the operator has exactly one
@@ -946,13 +958,13 @@ function ensureDefaultMissions(): void {
   // the trigger can never be clobbered. That keeps the `*Seeded` convention's
   // promise (exactly once, ever) without a config flag that would only ever be
   // read here; `compactMaintenanceSeeded` is left set so nothing re-seeds it.
-  const cfg3 = readConfig();
-  const missions3 = cfg3.missions ?? [];
-  const retiring = missions3.find((m) => m.id === COMPACT_MAINTENANCE_MISSION.id);
+  const cfg4 = readConfig();
+  const missions4 = cfg4.missions ?? [];
+  const retiring = missions4.find((m) => m.id === COMPACT_MAINTENANCE_MISSION.id);
   if (retiring) {
-    const current = cfg3.contextTrigger ?? DEFAULT_CONTEXT_TRIGGER;
+    const current = cfg4.contextTrigger ?? DEFAULT_CONTEXT_TRIGGER;
     writeConfig({
-      missions: missions3.filter((m) => m.id !== COMPACT_MAINTENANCE_MISSION.id),
+      missions: missions4.filter((m) => m.id !== COMPACT_MAINTENANCE_MISSION.id),
       contextTrigger: {
         ...current,
         compact: {
@@ -988,11 +1000,11 @@ function ensureDefaultMissions(): void {
   // pressure gate, and it is what actually performed every one of these
   // compactions already — both paths have called emitContextTrigger since Triggers
   // landed. Idempotent, so it costs one no-op scan per boot once clean.
-  const cfg4 = readConfig();
-  const missions4 = cfg4.missions ?? [];
-  if (missions4.some((m) => m.autoCompact)) {
+  const cfg5 = readConfig();
+  const missions5 = cfg5.missions ?? [];
+  if (missions5.some((m) => m.autoCompact)) {
     writeConfig({
-      missions: missions4.map(({ autoCompact, ...rest }) => {
+      missions: missions5.map(({ autoCompact, ...rest }) => {
         void autoCompact;
         return rest;
       })
