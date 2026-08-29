@@ -20,6 +20,8 @@ import type {
 export type {
   ContextRule, ContextTriggerConfig, OrgTriggerConfig, TriggerHistoryEntry, WebhookTrigger
 } from '../shared/triggers';
+import type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
+export type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
 
 /** Renderer-visible integration record: the secretRef handle is redacted to a
  *  presence boolean. Matches main `integrations.listRecordsRedacted()` — the
@@ -270,6 +272,10 @@ export interface HarnessConfig {
   /** Recently-opened hive home folders (most-recent first). Mirrors src/main/config.ts. */
   recentHives?: string[];
   registeredRepos: string[];
+  jiraProjects: JiraProjectBinding[];
+  jiraPoll: JiraPollSettings;
+  jiraProjectsImported?: boolean;
+  jiraPollSeeded?: boolean;
   autoMode: boolean;
   defaultCommand: string;
   defaultModel?: string;

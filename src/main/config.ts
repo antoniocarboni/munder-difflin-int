@@ -10,6 +10,12 @@ import {
   type AgentProvider
 } from '../shared/agentProvider';
 import { defaultMcpDefaults } from '../shared/mcpCatalog';
+import {
+  type JiraProjectBinding,
+  type JiraPollSettings,
+  DEFAULT_JIRA_POLL_SETTINGS,
+  parseJiraMapJson
+} from '../shared/jiraProjects';
 import { MAX_AGENT_TOKEN_CAP } from '../shared/tokenCaps';
 import { expandTilde, normalizeHiveHome } from './fs';
 import type { IntegrationRecord } from '../shared/integrations';
@@ -107,6 +113,36 @@ export const HEARTBEAT_MISSION: ScheduledMission = {
   enabled: false,
   kind: 'heartbeat',
   quietThresholdMs: 300_000
+};
+
+/** The Jira claim poll: fetches active project bindings from the loopback
+ *  broker (GET /jira-bindings — see integrationBroker.ts) and, for each, claims
+ *  any issue assigned to the user in "To Do" (transition + kanban card + branch
+ *  + delegate the Jira comment to Pam). Data (which projects/repos/agents) lives
+ *  in jiraProjects config, NOT here — adding a project never touches this body.
+ *
+ *  Shipped DISABLED (opt-in, like the heartbeat): it makes Jira state
+ *  transitions and creates kanban cards, not just a message. */
+export const JIRA_POLL_MISSION: ScheduledMission = {
+  id: 'jira-poll',
+  label: 'Jira claim poll',
+  intervalMs: DEFAULT_JIRA_POLL_SETTINGS.pollIntervalMs,
+  to: 'god',
+  body:
+    'Jira claim poll. Fetch the active project bindings from the loopback broker ' +
+    '(GET /jira-bindings via MD_BROKER_URL, with your MD_BROKER_TOKEN capability ' +
+    'header) — it returns { bindings: [{key, repo, baseBranch, agents}], poll }. ' +
+    'For each enabled binding, look up Jira issues assigned to the current user ' +
+    'in status "To Do" for that project key. For every issue found: (1) claim it ' +
+    '— transition it automatically on Jira (no comment on the transition itself); ' +
+    '(2) create a card in tasks.json with project=<key>, repo=<binding.repo>, ' +
+    'status="doing", and assign it to one of binding.agents (or any capable agent ' +
+    'if the list is empty); (3) branch convention is feature/<KEY>-<num>-<slug> ' +
+    'cut from binding.baseBranch (sprints use stage/sprint-<NN>); (4) only Pam ' +
+    'posts Jira comments — a fixed template, capped ~600 characters, only at the ' +
+    'steps that matter (claimed, ready for QA, closed). Never paste logs, diffs, ' +
+    'or agent reports into a Jira comment — technical detail stays on the hive card.',
+  enabled: false
 };
 
 /** The dedicated auto-compact MAINTENANCE schedule (maint-1). DECOUPLED from the
@@ -218,6 +254,12 @@ export interface HarnessConfig {
   recentHives?: string[];
   /** Folders the user registered during onboarding (used as quick-picks). */
   registeredRepos: string[];
+  /** Jira project → repo → base branch → agents bindings. Replaces the
+   *  hand-written hive/jira-map.json. Empty by default; see JiraProjectBinding
+   *  in shared/jiraProjects.ts. */
+  jiraProjects: JiraProjectBinding[];
+  /** Global settings for the Jira claim poll (interval + claim filter). */
+  jiraPoll: JiraPollSettings;
   /** When true, new agents are spawned with --permission-mode bypassPermissions. */
   autoMode: boolean;
   /** May the orchestrator ("Michael") spin up agents on its own?
@@ -257,6 +299,11 @@ export interface HarnessConfig {
   /** One-time guard for the built-in heartbeat mission (mirrors opsStandupSeeded
    *  so a user who deletes the heartbeat doesn't get it re-added every boot). */
   heartbeatSeeded?: boolean;
+  /** One-time guard: has hive/jira-map.json been imported into jiraProjects?
+   *  Prevents re-importing after the user deletes bindings on purpose. */
+  jiraProjectsImported?: boolean;
+  /** Mirrors opsStandupSeeded/heartbeatSeeded for JIRA_POLL_MISSION. */
+  jiraPollSeeded?: boolean;
   /** maint-1 guard for the dedicated auto-compact maintenance mission. UNLIKE the
    *  two above, this does NOT suppress re-add forever: once seeded (flag set), a
    *  later delete makes the mission reappear DISABLED on next boot (compaction is
@@ -452,6 +499,8 @@ const DEFAULTS: HarnessConfig = {
   harnessHome: null,
   recentHives: [],
   registeredRepos: [],
+  jiraProjects: [],
+  jiraPoll: DEFAULT_JIRA_POLL_SETTINGS,
   autoMode: true,
   orchestratorMaySpawn: false,
   defaultCommand: 'claude',

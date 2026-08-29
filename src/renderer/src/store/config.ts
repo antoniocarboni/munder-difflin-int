@@ -14,6 +14,8 @@ import type {
 } from '@shared/triggers';
 import { isNewer } from '@shared/updateState';
 import modelCatalog from '@shared/modelCatalog.json';
+import type { JiraProjectBinding, JiraPollSettings } from '@shared/jiraProjects';
+export type { JiraProjectBinding, JiraPollSettings } from '@shared/jiraProjects';
 
 export {
   AGENT_PROVIDER_PRESETS,
@@ -63,6 +65,11 @@ export interface HarnessConfig {
    *  Mirrors src/main/config.ts. */
   recentHives?: string[];
   registeredRepos: string[];
+  /** Mirrors src/main/config.ts. */
+  jiraProjects: JiraProjectBinding[];
+  jiraPoll: JiraPollSettings;
+  jiraProjectsImported?: boolean;
+  jiraPollSeeded?: boolean;
   autoMode: boolean;
   /** May the orchestrator ("Michael") spin up agents on its own? Default FALSE,
    *  so an absent value reads as off. Mirrors src/main/config.ts. */
