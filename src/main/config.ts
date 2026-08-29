@@ -671,6 +671,39 @@ function migrateTriggersV1(cfg: HarnessConfig): HarnessConfig {
   }
 }
 
+let jiraProjectsMigrationRan = false;
+
+/** One-shot import of the legacy hive/jira-map.json into `jiraProjects`. Reads
+ *  from <harnessHome>/hive/jira-map.json (HiveManager.root(), duplicated here
+ *  as a plain path since config.ts must not import hive.ts). Never mutates or
+ *  deletes the file — the user removes it once they're done relying on it. */
+function migrateJiraProjectsV1(cfg: HarnessConfig): HarnessConfig {
+  if (cfg.jiraProjectsImported || jiraProjectsMigrationRan) return cfg;
+  jiraProjectsMigrationRan = true;
+  if (!cfg.harnessHome || (cfg.jiraProjects?.length ?? 0) > 0) {
+    return { ...cfg, jiraProjectsImported: true };
+  }
+  try {
+    const mapPath = join(expandTilde(cfg.harnessHome), 'hive', 'jira-map.json');
+    if (!existsSync(mapPath)) return { ...cfg, jiraProjectsImported: true };
+    const parsed = parseJiraMapJson(readFileSync(mapPath, 'utf8'));
+    if (!parsed) return { ...cfg, jiraProjectsImported: true };
+    const next: HarnessConfig = {
+      ...cfg,
+      jiraProjects: parsed.bindings,
+      jiraPoll: { ...cfg.jiraPoll, ...parsed.poll },
+      jiraProjectsImported: true
+    };
+    persistConfig(next);
+    return next;
+  } catch {
+    // Leave jiraProjects at its current value; the latch above stays set for
+    // this process, and jiraProjectsImported never got persisted, so a fixed
+    // file gets picked up on the next launch.
+    return cfg;
+  }
+}
+
 export function readConfig(): HarnessConfig {
   const p = configPath();
   // No file yet = a first run with nothing to migrate; the defaults ARE the
@@ -680,7 +713,7 @@ export function readConfig(): HarnessConfig {
   try {
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    return normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed })));
+    return migrateJiraProjectsV1(normalizeStoredHomes(migrateTriggersV1(withTriggerDefaults({ ...DEFAULTS, ...parsed }))));
   } catch {
     return withTriggerDefaults({ ...DEFAULTS });
   }
@@ -826,6 +859,7 @@ export function resetConfig(): HarnessConfig {
   // false`, and a latch left set would keep the flag from ever being written again
   // in this process. The migration itself is a no-op on defaults either way.
   triggersMigrationRan = false;
+  jiraProjectsMigrationRan = false;
   return withTriggerDefaults({ ...DEFAULTS });
 }
 
