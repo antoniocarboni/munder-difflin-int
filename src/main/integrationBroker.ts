@@ -32,6 +32,8 @@ import {
   resolveUpstreamUrl,
   authTypeNeedsSecret
 } from '../shared/integrations';
+import type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
+import { DEFAULT_JIRA_POLL_SETTINGS } from '../shared/jiraProjects';
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024; // 10 MB request-body cap
 const UPSTREAM_TIMEOUT_MS = 30_000;
@@ -63,6 +65,13 @@ export interface IntegrationBrokerDeps {
   getRecord: (id: string) => IntegrationRecord | undefined;
   /** Decrypt a secret by ref (injected — the secret store). Main-internal. */
   getSecret: (secretRef: string | undefined) => string | undefined;
+  /** Active (already enabled-filtered by the caller) Jira project bindings +
+   *  global poll settings, for the jira-poll mission's GET /jira-bindings call.
+   *  Unlike /i/<id>/<path>, this is config data, not a credentialed proxy — any
+   *  valid capability token can read it, regardless of allowedIds. Optional:
+   *  wired in by Task 10; absent means "no Jira bindings feature configured
+   *  yet" (e.g. an older construction site), not an error. */
+  getJiraBindings?: () => { bindings: JiraProjectBinding[]; poll: JiraPollSettings };
 }
 
 /** True for IPv4 loopback (127.0.0.0/8) and IPv6 ::1 (incl. v4-mapped). Mirrors slack.ts. */
@@ -178,8 +187,18 @@ export class IntegrationBroker {
     const cap = this.resolveCapability(IntegrationBroker.tokenFrom(req));
     if (!cap) return IntegrationBroker.sendError(res, 401, 'unauthorized', 'missing or invalid capability token');
 
-    // 3) Parse /i/<integrationId>/<path...>.
+    // 2b) GET /jira-bindings — config data, not an integration proxy, so any
+    // valid token (not just ones scoped to a specific integration id) may read
+    // it. Checked before the /i/<id>/<path> parse below.
     const rawUrl = req.url ?? '';
+    if (req.method === 'GET' && /^\/jira-bindings\/?(\?[^#]*)?$/.test(rawUrl)) {
+      const { bindings, poll } = this.deps.getJiraBindings?.() ?? { bindings: [], poll: DEFAULT_JIRA_POLL_SETTINGS };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ bindings, poll }));
+      return;
+    }
+
+    // 3) Parse /i/<integrationId>/<path...>.
     const m = /^\/i\/([^/?#]+)(?:\/([^?#]*))?(\?[^#]*)?$/.exec(rawUrl);
     if (!m) return IntegrationBroker.sendError(res, 404, 'not_found', 'expected /i/<integrationId>/<path>');
     const integrationId = decodeURIComponent(m[1]);
