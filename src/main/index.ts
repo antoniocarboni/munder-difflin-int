@@ -60,7 +60,7 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
-import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
+import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -3136,27 +3136,7 @@ ipcMain.handle('providerKey:clear', (_evt, backend: unknown) => {
 ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown; path?: unknown };
   if (typeof p.id !== 'string' || !p.id) return { ok: false, error: 'id required' };
-  const rec = integrations.getRecord(p.id);
-  if (!rec) return { ok: false, error: 'unknown integration' };
-  const probe = validateBaseUrl(rec.baseUrl);
-  if (!probe.ok) return { ok: false, error: probe.error };
-  // Confine the probe path through the SAME gate as the worker forward() path, so an
-  // absolute URL / backslash-host / traversal in p.path can't override the origin and
-  // exfiltrate the secret to an attacker host. Resolve (and reject) BEFORE the secret
-  // is ever materialized, so a bad path never even decrypts it.
-  const target = resolveUpstreamUrl(rec.baseUrl, typeof p.path === 'string' ? p.path : '');
-  if (!target) return { ok: false, error: 'path escapes the integration baseUrl', code: 'bad_request' };
-  const secret = integrations.getSecret(rec.secretRef);
-  const headers = buildAuthHeaders(rec.authType, rec.authHeader, secret);
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 15_000);
-    const r = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: ac.signal });
-    clearTimeout(timer);
-    return { ok: r.ok, status: r.status };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  return integrations.probeRecord(p.id, typeof p.path === 'string' ? p.path : undefined);
 });
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
