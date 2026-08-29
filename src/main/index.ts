@@ -60,6 +60,7 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
+import * as jiraProjects from './jiraProjects';
 import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
@@ -889,6 +890,15 @@ function archiveOrphanedAgents(): void {
   } catch (e) {
     console.error('[migration] archiveOrphanedAgents failed:', e);
   }
+}
+
+/** True when `id` is god, or a non-archived agent in the hive registry. Used to
+ *  validate JiraProjectBinding.agents at save time (jiraProjects.ts). */
+function agentExists(id: string): boolean {
+  const reg = hive.registry();
+  if (id === reg.godId) return true;
+  const a = reg.agents[id];
+  return !!a && !a.archived;
 }
 
 /** One-time migration: ensure the built-in hourly ops standup exists for installs
@@ -3179,6 +3189,48 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   }
   return next;
 });
+
+// ─── IPC: Jira project bindings ─────────────────────────────────────────────
+function jiraValidationDeps(): jiraProjects.JiraValidationDeps {
+  const jiraRecord = integrations.getRecord('jira');
+  const jiraUsable = !!jiraRecord?.enabled && integrations.hasSecret(jiraRecord.secretRef);
+  return {
+    isRepo,
+    getBranches,
+    agentExists,
+    testJiraKey: jiraUsable
+      ? async (key: string) => {
+        const r = await integrations.probeRecord('jira', `/project/${encodeURIComponent(key)}`);
+        return { ok: r.ok, status: r.status };
+      }
+      : undefined
+  };
+}
+
+ipcMain.handle('jiraProjects:list', () => jiraProjects.listBindings());
+
+ipcMain.handle('jiraProjects:validate', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { binding?: unknown };
+  const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
+  if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  const others = jiraProjects.listBindings().filter((b) => b.key.toUpperCase() !== binding.key.toUpperCase());
+  return jiraProjects.validateJiraProjectBinding(binding, others, jiraValidationDeps());
+});
+
+ipcMain.handle('jiraProjects:upsert', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { binding?: unknown };
+  const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
+  if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  return jiraProjects.upsertBinding(binding, jiraValidationDeps());
+});
+
+ipcMain.handle('jiraProjects:remove', (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { key?: unknown };
+  if (typeof p.key !== 'string' || !p.key) return { ok: false };
+  jiraProjects.removeBinding(p.key);
+  return { ok: true };
+});
+
 ipcMain.handle('config:setAgentTokenCap', (_evt, agentId: unknown, tokenCap: unknown) =>
   setAgentTokenCap(agentId, tokenCap)
 );
