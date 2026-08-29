@@ -18,28 +18,32 @@ interface Draft {
   key: string;
   repo: string;
   baseBranch: string;
-  agentsCsv: string; // comma-separated agent ids, parsed to string[] on save
+  agents: string[]; // agent ids, empty = any agent
   enabled: boolean;
 }
 
 interface TestResult { ok: boolean; error?: string }
 
+/** An assignable agent for the multi-select: every non-archived hive-registry
+ *  entry, god included (the server-side agentExists check always treats god
+ *  as valid, so the UI shouldn't exclude it either). */
+interface AssignableAgent { id: string; name: string }
+
 function draftFromBinding(b: JiraProjectBinding): Draft {
   return {
     isNew: false, key: b.key, repo: b.repo, baseBranch: b.baseBranch,
-    agentsCsv: (b.agents ?? []).join(', '), enabled: b.enabled
+    agents: b.agents ?? [], enabled: b.enabled
   };
 }
 function emptyDraft(): Draft {
-  return { isNew: true, key: '', repo: '', baseBranch: '', agentsCsv: '', enabled: true };
+  return { isNew: true, key: '', repo: '', baseBranch: '', agents: [], enabled: true };
 }
 function bindingFromDraft(d: Draft): JiraProjectBinding {
-  const agents = d.agentsCsv.split(',').map((s) => s.trim()).filter(Boolean);
   return {
     key: d.key.trim().toUpperCase(),
     repo: d.repo.trim(),
     baseBranch: d.baseBranch.trim(),
-    agents: agents.length > 0 ? agents : undefined,
+    agents: d.agents.length > 0 ? d.agents : undefined,
     enabled: d.enabled
   };
 }
@@ -61,20 +65,26 @@ export function JiraProjectsRegistry() {
   const [rowTest, setRowTest] = useState<Record<string, TestResult>>({});
   const [testingKey, setTestingKey] = useState<string | null>(null);
   const [pollMinutes, setPollMinutes] = useState(5);
+  const [agentRoster, setAgentRoster] = useState<AssignableAgent[]>([]);
 
   const refresh = async () => setBindings(await jiraProjectsClient.list());
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [bs, ints, cfg] = await Promise.all([
-        jiraProjectsClient.list(), integrationsClient.list(), window.cth.getConfig()
+      const [bs, ints, cfg, registry] = await Promise.all([
+        jiraProjectsClient.list(), integrationsClient.list(), window.cth.getConfig(), window.cth.hiveRegistry()
       ]);
       if (!alive) return;
       setBindings(bs);
       const jira = ints.find((r) => r.id === 'jira');
       setJiraUsable(!!jira?.enabled && (!needsSecret(jira.authType) || jira.hasSecret));
       setPollMinutes(Math.round((cfg.jiraPoll?.pollIntervalMs ?? 300000) / 60000));
+      setAgentRoster(
+        Object.values(registry.agents)
+          .filter((a) => !a.archived)
+          .map((a) => ({ id: a.id, name: a.name }))
+      );
     })();
     return () => { alive = false; };
   }, []);
@@ -83,6 +93,11 @@ export function JiraProjectsRegistry() {
   const startAdd = () => { setDraft(emptyDraft()); setErr(''); setView('configure'); };
   const startEdit = (b: JiraProjectBinding) => { setDraft(draftFromBinding(b)); setErr(''); setView('configure'); };
   const patch = (p: Partial<Draft>) => setDraft((d) => (d ? { ...d, ...p } : d));
+  const toggleAgent = (id: string, checked: boolean) => setDraft((d) => {
+    if (!d) return d;
+    const agents = checked ? [...d.agents, id] : d.agents.filter((a) => a !== id);
+    return { ...d, agents };
+  });
 
   const onSave = async () => {
     if (!draft) return;
@@ -147,7 +162,7 @@ export function JiraProjectsRegistry() {
                   <PixelButton variant="secondary" size="sm" onClick={() => void onTestRow(b)} disabled={testingKey === b.key}>
                     {testingKey === b.key ? tr('jiraProjects.testing') : tr('jiraProjects.test')}
                   </PixelButton>
-                  <PixelButton variant="secondary" size="sm" onClick={() => startEdit(b)}>{tr('jiraProjects.saveChanges')}</PixelButton>
+                  <PixelButton variant="secondary" size="sm" onClick={() => startEdit(b)}>{tr('jiraProjects.edit')}</PixelButton>
                   <PixelButton variant="secondary" size="sm" onClick={() => void onRemove(b.key)}>×</PixelButton>
                 </div>
               );
@@ -199,8 +214,19 @@ export function JiraProjectsRegistry() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={fieldLabel}>{tr('jiraProjects.agents')}</span>
-            <input value={draft.agentsCsv} onChange={(e) => patch({ agentsCsv: e.target.value })} style={inputStyle} />
             <span style={hint}>{tr('jiraProjects.agentsHint')}</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 2 }}>
+              {agentRoster.map((a) => (
+                <label key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cth-ink-700)' }}>
+                  <input
+                    type="checkbox"
+                    checked={draft.agents.includes(a.id)}
+                    onChange={(e) => toggleAgent(a.id, e.target.checked)}
+                  />
+                  {a.name}
+                </label>
+              ))}
+            </div>
           </div>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cth-ink-700)' }}>

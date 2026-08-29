@@ -1274,6 +1274,7 @@
   "jiraProjects": {
     "title": "Jira 项目",
     "desc": "Jira 项目与本地仓库、基础分支和执行代理的对应关系。",
+    "edit": "编辑",
     "needsIntegration": "请先在上方配置 Jira 集成——绑定仍可添加，但远程密钥校验将被跳过，直到连接完成。",
     "addProject": "+ 添加项目",
     "key": "Jira 键",

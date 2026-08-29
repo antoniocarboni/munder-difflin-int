@@ -1274,6 +1274,7 @@
   "jiraProjects": {
     "title": "Jira projects",
     "desc": "Which Jira project maps to which local repo, base branch, and agents.",
+    "edit": "Edit",
     "needsIntegration": "Configure the Jira integration above first — bindings can be added, but the remote key check is skipped until it's connected.",
     "addProject": "+ Add project",
     "key": "Jira key",
