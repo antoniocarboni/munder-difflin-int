@@ -5,12 +5,21 @@
 // loadTs('src/main/config.ts') more than once in this process returns the SAME
 // module instance (same closure state, including the jiraProjectsMigrationRan
 // latch), exactly like test/config-write-notify.test.cjs's single top-level
-// load. `node --test` runs the `test()` calls in ONE file sequentially in
-// source order by default, so only the FIRST test below sees the latch at its
-// initial `false` — that's intentional and is why it's written first. Every
-// later test either pre-sets the persisted `jiraProjectsImported` flag in its
-// own config.json (so it doesn't depend on the in-memory latch at all) or only
-// asserts something true regardless of whether migration ran this time.
+// load. That means the latch tripped by the first test's `readConfig()` call
+// would stay tripped for every subsequent test in this file — and with it
+// tripped, `migrateJiraProjectsV1` short-circuits before ever touching the
+// filesystem, so a test written naively after the first would pass trivially
+// without exercising the real migration code path at all.
+//
+// The fix: `resetConfig()` (exported from config.ts) resets BOTH
+// `triggersMigrationRan` and `jiraProjectsMigrationRan` to `false` as part of
+// wiping the persisted config back to defaults. Every test below (including
+// the first, for uniformity) calls `resetConfig()` right after `newProfileDir`
+// points `currentUserDataDir` at that test's own throwaway directory, and
+// before writing that test's own jira-map.json/config.json. This gives each
+// test a genuinely fresh in-process latch, so its own `readConfig()` call
+// really re-enters `migrateJiraProjectsV1`'s filesystem-reading code instead
+// of skipping it via latch state left over from an earlier test.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -29,7 +38,7 @@ require.cache[electron] = {
 };
 let currentUserDataDir = userData;
 
-const { readConfig } = loadTs('src/main/config.ts');
+const { readConfig, resetConfig } = loadTs('src/main/config.ts');
 
 test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
 
@@ -37,6 +46,7 @@ function newProfileDir(name) {
   const dir = path.join(userData, name);
   fs.mkdirSync(dir, { recursive: true });
   currentUserDataDir = dir;
+  resetConfig();
   return dir;
 }
 
