@@ -785,6 +785,61 @@ test('accepts a fully valid binding', async () => {
   assert.deepEqual(res, { ok: true });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// --- CRUD: listBindings/upsertBinding/removeBinding ---
+// These call readConfig/writeConfig (./config), which resolve their file
+// through electron's app.getPath — mock it exactly like
+// test/config-write-notify.test.cjs, pointed at a throwaway directory.
+const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'md-jira-crud-'));
+const electronPath = require.resolve('electron');
+require.cache[electronPath] = {
+  id: electronPath, filename: electronPath, loaded: true,
+  exports: { app: { getPath: () => userData } }
+};
+const { listBindings, upsertBinding, removeBinding } = loadTs('src/main/jiraProjects.ts');
+
+test.after(() => fs.rmSync(userData, { recursive: true, force: true }));
+
+test('listBindings returns an empty list on a fresh config', () => {
+  assert.deepEqual(listBindings(), []);
+});
+
+test('upsertBinding validates before writing — an invalid binding is rejected and not persisted', async () => {
+  const res = await upsertBinding(
+    { key: 'bad', repo: '/nope', baseBranch: 'develop', enabled: true },
+    okDeps()
+  );
+  assert.equal(res.ok, false);
+  assert.deepEqual(listBindings(), []);
+});
+
+test('upsertBinding persists a valid new binding', async () => {
+  const dir = initRepo();
+  const binding = { key: 'BURD', repo: dir, baseBranch: 'develop', enabled: true };
+  const res = await upsertBinding(binding, okDeps());
+  assert.equal(res.ok, true);
+  assert.deepEqual(listBindings(), [binding]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('upsertBinding replaces an existing binding with the same key instead of duplicating it', async () => {
+  const dir = initRepo();
+  await upsertBinding({ key: 'BURD', repo: dir, baseBranch: 'develop', enabled: true }, okDeps());
+  const updated = { key: 'BURD', repo: dir, baseBranch: 'develop', agents: ['dwight'], enabled: false };
+  const res = await upsertBinding(updated, okDeps());
+  assert.equal(res.ok, true);
+  assert.deepEqual(listBindings(), [updated]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('removeBinding removes by key case-insensitively and is a no-op otherwise', async () => {
+  const dir = initRepo();
+  await upsertBinding({ key: 'BURD', repo: dir, baseBranch: 'develop', enabled: true }, okDeps());
+  removeBinding('burd');
+  assert.deepEqual(listBindings(), []);
+  assert.deepEqual(removeBinding('GHOST'), []); // no-op, doesn't throw
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -904,7 +959,7 @@ export function removeBinding(key: string): JiraProjectBinding[] {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test test/jira-projects-validate.test.cjs`
-Expected: PASS (10 tests)
+Expected: PASS (15 tests)
 
 - [ ] **Step 5: Commit**
 
