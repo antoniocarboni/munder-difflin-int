@@ -385,6 +385,21 @@ export interface KnowledgeIngestResult {
   error?: string;
 }
 
+/** Per-project outcome of one Obsidian vault sync pass (mirrors
+ *  src/main/knowledgeVaultSync.ts VaultSyncProjectResult). */
+export interface VaultSyncProjectResult {
+  slug: string;
+  added: number;
+  updated: number;
+  removed: number;
+  errors: string[];
+}
+export interface VaultSyncTickResult {
+  ran: boolean;
+  result?: { projects: VaultSyncProjectResult[] };
+  error?: string;
+}
+
 export interface DirEntry {
   name: string;
   isDir: boolean;
@@ -750,6 +765,10 @@ const api = {
     ipcRenderer.invoke('git:checkout', cwd, ref, detach === true) as Promise<
       { ok: true; detached: boolean } | { ok: false; error: string }
     >,
+  /** `git remote get-url origin` for a repo path, or null (no repo/no origin).
+   *  Backs the Vault Sync settings UI's project picker — the operator never
+   *  types a git URL by hand. */
+  gitRemoteUrl: (cwd: string): Promise<string | null> => ipcRenderer.invoke('git:remoteUrl', cwd),
 
   // ─── Hive (multi-agent coordination) ─────────────────────────────────────
   hiveRegistry: (): Promise<HiveRegistry> => ipcRenderer.invoke('hive:registry'),
@@ -835,6 +854,21 @@ const api = {
   /** Ingest explicit file paths (e.g. drag-and-drop). */
   kgIngestFiles: (paths: string[], tags?: string[]): Promise<KnowledgeIngestResult> =>
     ipcRenderer.invoke('kg:ingestFiles', { paths, tags }),
+
+  // ─── Obsidian Vault Sync (Settings → Memory & Knowledge) ───────────────────
+  /** Pick a folder inside `vaultPath` for one project mapping; returns the
+   *  path relative to the vault root, ready to store as `vaultFolder`. */
+  chooseVaultSubfolder: (vaultPath: string): Promise<{ ok: true; relativePath: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('knowledge:chooseVaultSubfolder', vaultPath),
+  /** Run one sync pass immediately, outside the daily timer. */
+  vaultSyncNow: (): Promise<VaultSyncTickResult> => ipcRenderer.invoke('knowledge:vaultSyncNow'),
+  /** Project-scoped mirrors of kgStatus/kgList/kgGet, for the per-mapping
+   *  "N documents indexed" + preview. `slug` must be one of the CONFIGURED
+   *  vault-sync project mappings — main re-checks this, it is not trusted. */
+  kgStatusForProject: (slug: string): Promise<KnowledgeStatus> => ipcRenderer.invoke('kg:statusForProject', slug),
+  kgListForProject: (slug: string): Promise<KnowledgeDoc[]> => ipcRenderer.invoke('kg:listForProject', slug),
+  kgGetForProject: (slug: string, docId: string): Promise<{ meta: KnowledgeDoc; text: string } | null> =>
+    ipcRenderer.invoke('kg:getForProject', slug, docId),
 
   // ─── Composer attachments (images + files, sent to agents by PATH) ─────────
   /** Open an OS picker for images/files; returns chosen absolute paths + names. */

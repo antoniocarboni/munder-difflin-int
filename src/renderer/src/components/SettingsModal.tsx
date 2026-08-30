@@ -1,6 +1,8 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AGENT_MODELS, type HarnessConfig } from '@/store/config';
+import { AGENT_MODELS, type HarnessConfig, type KnowledgeGraphConfig, type VaultProjectMapping } from '@/store/config';
+import { mergeKnowledgeGraphPatch, slugifyProjectName, dedupeSlug } from './vaultSyncConfig';
+import type { KnowledgeDoc } from '../../../preload';
 import { useStore } from '@/store/store';
 import {
   CLONE_NODE_BLURB,
@@ -64,6 +66,23 @@ const triggersApi = (): TriggersApi => window.cth as unknown as TriggersApi;
  *  so it must be stable and collision-free across renames. */
 function newWebhookId(): string {
   return `wh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** No `node:path` in the renderer (context isolation) — last path segment
+ *  only, used to label a registered repo in the Vault Sync project picker. */
+function basenamePath(path: string): string {
+  return path.split('/').filter(Boolean).pop() ?? path;
+}
+
+/** Coarse "how long ago", for the Vault Sync last-synced note — no need for a
+ *  full Intl.RelativeTimeFormat setup for one informational line. */
+function formatAgo(ms: number): string {
+  const mins = Math.floor((Date.now() - ms) / 60000);
+  if (mins < 1) return '<1m';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 /** Pixel-aesthetic text input, mirroring AddAgentModal's inputStyle. */
@@ -432,12 +451,20 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
   const [orgNote, setOrgNote] = useState('');
 
   // ─── Knowledge Graph (enterprise multimodal context for agents) ───────────
-  const [kgEnabled, setKgEnabled] = useState<boolean>(
-    (config as HarnessConfig & { knowledgeGraph?: { enabled?: boolean } }).knowledgeGraph?.enabled === true
-  );
+  // Every control that touches `knowledgeGraph` — this one and the Vault Sync
+  // block below — must go through the `stageKg` helper, never call `stage`
+  // directly with a `knowledgeGraph` patch: `stage()` replaces the whole key
+  // on each call, so two direct calls in the same Settings session (e.g.
+  // toggle KG on, then edit Vault Sync) would have the second silently drop
+  // the first's change.
+  const [kgEnabled, setKgEnabled] = useState<boolean>(config.knowledgeGraph?.enabled === true);
   const [kgDocCount, setKgDocCount] = useState(0);
   const [kgBusy, setKgBusy] = useState(false);
   const [kgNote, setKgNote] = useState('');
+
+  const stageKg = (patch: Partial<KnowledgeGraphConfig>): void => {
+    stage({ knowledgeGraph: mergeKnowledgeGraphPatch(config.knowledgeGraph, pending.knowledgeGraph, patch) });
+  };
 
   const refreshKgStatus = async () => {
     try { const s = await window.cth.kgStatus(); setKgDocCount(s.docCount); }
@@ -448,7 +475,7 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
     const next = !kgEnabled;
     setKgEnabled(next);
     try {
-      stage({ knowledgeGraph: { enabled: next } });
+      stageKg({ enabled: next });
       if (next) await refreshKgStatus();
     } catch { setKgEnabled(!next); }
   };
@@ -464,6 +491,141 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
       await refreshKgStatus();
     } catch (e) { setKgNote(e instanceof Error ? e.message : String(e)); }
     finally { setKgBusy(false); }
+  };
+
+  // ─── Vault Sync (Obsidian → per-project Knowledge Graph, daily) ───────────
+  const [vsEnabled, setVsEnabled] = useState<boolean>(config.knowledgeGraph?.vaultSync?.enabled === true);
+  const [vaultPath, setVaultPath] = useState<string>(config.knowledgeGraph?.vaultSync?.vaultPath ?? '');
+  const [vsProjects, setVsProjects] = useState<VaultProjectMapping[]>(config.knowledgeGraph?.vaultSync?.projects ?? []);
+  const [vsLastSync, setVsLastSync] = useState<number | undefined>(config.knowledgeGraph?.vaultSync?.lastSyncAt);
+  const [vsNote, setVsNote] = useState('');
+  const [vsSyncBusy, setVsSyncBusy] = useState(false);
+  // Resolved once per registeredRepos change so the project dropdown can show
+  // which entry a mapping's stored `repoOrigin` currently belongs to, without
+  // resolving origins synchronously on every render.
+  const [repoOrigins, setRepoOrigins] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const entries = await Promise.all(
+        (config.registeredRepos ?? []).map(async (p) => [p, await window.cth.gitRemoteUrl(p)] as const)
+      );
+      if (!cancelled) setRepoOrigins(Object.fromEntries(entries));
+    })();
+    return () => { cancelled = true; };
+  }, [config.registeredRepos]);
+  const pathForOrigin = (origin: string): string | undefined =>
+    Object.entries(repoOrigins).find(([, o]) => o === origin)?.[0];
+
+  const stageVaultPath = (path: string): void => {
+    setVaultPath(path);
+    stageKg({ vaultSync: { vaultPath: path } });
+  };
+
+  const toggleVaultSync = () => {
+    const next = !vsEnabled;
+    setVsEnabled(next);
+    // Vault sync is a no-op unless the Knowledge Graph itself is on (main
+    // checks both flags before every tick — see runVaultSyncTick). Turning
+    // this on turns that on too, rather than leaving a toggle "on" that does
+    // nothing until the operator finds and flips a second one.
+    if (next && !kgEnabled) setKgEnabled(true);
+    stageKg({ ...(next && !kgEnabled ? { enabled: true } : {}), vaultSync: { enabled: next } });
+  };
+
+  const chooseVaultPath = async () => {
+    const res = await window.cth.chooseFolder();
+    if (res.ok) stageVaultPath(res.path);
+  };
+
+  const updateVsProjects = (rows: VaultProjectMapping[]): void => {
+    setVsProjects(rows);
+    stageKg({ vaultSync: { projects: rows } });
+  };
+
+  const addVsMapping = () => updateVsProjects([...vsProjects, { slug: '', repoOrigin: '', vaultFolder: '' }]);
+  const removeVsMapping = (idx: number) => updateVsProjects(vsProjects.filter((_, i) => i !== idx));
+
+  /** Resolve the picked project's git origin automatically — the operator
+   *  never types or pastes a remote URL by hand (see git:remoteUrl). */
+  const pickVsProject = async (idx: number, repoPath: string) => {
+    setVsNote('');
+    const origin = await window.cth.gitRemoteUrl(repoPath);
+    if (!origin) {
+      setVsNote(`"${basenamePath(repoPath)}" has no git origin — it can't be mapped`);
+      return;
+    }
+    const existingSlugs = vsProjects.filter((_, i) => i !== idx).map((p) => p.slug).filter(Boolean);
+    const slug = vsProjects[idx].slug || dedupeSlug(slugifyProjectName(basenamePath(repoPath)), existingSlugs);
+    const rows = vsProjects.slice();
+    rows[idx] = { ...rows[idx], repoOrigin: origin, slug };
+    updateVsProjects(rows);
+  };
+
+  const pickVsFolder = async (idx: number) => {
+    setVsNote('');
+    const res = await window.cth.chooseVaultSubfolder(vaultPath);
+    if (!res.ok) { if (res.error !== 'cancelled') setVsNote(res.error); return; }
+    const rows = vsProjects.slice();
+    rows[idx] = { ...rows[idx], vaultFolder: res.relativePath };
+    updateVsProjects(rows);
+  };
+
+  const syncVaultNow = async () => {
+    setVsSyncBusy(true); setVsNote('');
+    try {
+      const res = await window.cth.vaultSyncNow();
+      if (!res.ran) { setVsNote(res.error ?? 'sync did not run'); return; }
+      setVsLastSync(Date.now());
+      const totals = (res.result?.projects ?? []).reduce(
+        (acc, p) => ({ added: acc.added + p.added, updated: acc.updated + p.updated, removed: acc.removed + p.removed, errors: acc.errors + p.errors.length }),
+        { added: 0, updated: 0, removed: 0, errors: 0 }
+      );
+      setVsNote(`synced: +${totals.added} ~${totals.updated} -${totals.removed}${totals.errors ? `, ${totals.errors} error${totals.errors === 1 ? '' : 's'}` : ''}`);
+    } catch (e) { setVsNote(e instanceof Error ? e.message : String(e)); }
+    finally { setVsSyncBusy(false); }
+    await refreshVsDocCounts();
+  };
+
+  // Per-mapping doc browser (view count → expand list → preview one), all
+  // keyed by the mapping's index in vsProjects like the rest of this section.
+  const [vsDocCounts, setVsDocCounts] = useState<Record<number, number>>({});
+  const [vsDocsOpen, setVsDocsOpen] = useState<Record<number, boolean>>({});
+  const [vsDocsList, setVsDocsList] = useState<Record<number, KnowledgeDoc[]>>({});
+  const [vsDocsBusy, setVsDocsBusy] = useState<Record<number, boolean>>({});
+  const [vsPreview, setVsPreview] = useState<Record<number, { docId: string; title: string; text: string } | null>>({});
+
+  /** Refresh every mapped row's doc count — called on open and after a sync,
+   *  so the count never has to be manually refreshed by the operator. Only
+   *  rows with a resolved slug are queried; a freshly-added, not-yet-mapped
+   *  row has nothing to count. */
+  const refreshVsDocCounts = async () => {
+    const slugs = vsProjects.map((p, idx) => [idx, p.slug] as const).filter(([, slug]) => slug);
+    const entries = await Promise.all(
+      slugs.map(async ([idx, slug]) => [idx, (await window.cth.kgStatusForProject(slug)).docCount] as const)
+    );
+    setVsDocCounts(Object.fromEntries(entries));
+  };
+  useEffect(() => { void refreshVsDocCounts(); }, [vsProjects.map((p) => p.slug).join(',')]);
+
+  const toggleVsDocs = async (idx: number) => {
+    const opening = !vsDocsOpen[idx];
+    setVsDocsOpen((prev) => ({ ...prev, [idx]: opening }));
+    setVsPreview((prev) => ({ ...prev, [idx]: null }));
+    if (!opening || vsDocsList[idx] || !vsProjects[idx]?.slug) return;
+    setVsDocsBusy((prev) => ({ ...prev, [idx]: true }));
+    try {
+      const docs = await window.cth.kgListForProject(vsProjects[idx].slug);
+      setVsDocsList((prev) => ({ ...prev, [idx]: docs }));
+    } finally {
+      setVsDocsBusy((prev) => ({ ...prev, [idx]: false }));
+    }
+  };
+
+  const previewVsDoc = async (idx: number, doc: KnowledgeDoc) => {
+    if (vsPreview[idx]?.docId === doc.id) { setVsPreview((prev) => ({ ...prev, [idx]: null })); return; }
+    const res = await window.cth.kgGetForProject(vsProjects[idx].slug, doc.id);
+    setVsPreview((prev) => ({ ...prev, [idx]: res ? { docId: doc.id, title: doc.title, text: res.text } : null }));
   };
 
   // ─── Scheduled auto-compact — the compact-maintenance mission's enabled flag.
@@ -1416,6 +1578,192 @@ export function SettingsModal({ config, onClose, initialSection }: SettingsModal
                                 : t('settings.memory.docCountPlural', { count: kgDocCount })}
                             </span>
                             {kgNote && <span style={{ fontSize: 12, color: 'var(--cth-mint)' }}>{kgNote}</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ height: 1, background: 'var(--cth-ink-300)' }} />
+
+                      {/* Vault Sync — daily Obsidian import into the per-project
+                          store above. Additive: turning this on turns the Knowledge
+                          Graph toggle on too, since the sync is a no-op without it. */}
+                      <div>
+                        <div style={sectionHead}>
+                          {t('settings.memory.vaultSync')}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                            <span style={{ fontSize: 13, lineHeight: '20px', color: 'var(--cth-ink-900)' }}>
+                              {t('settings.memory.vaultSyncTitle')}
+                            </span>
+                            <span style={{ fontSize: 12, lineHeight: '16px', color: 'var(--cth-ink-500)' }}>
+                              {t('settings.memory.vaultSyncDesc')}
+                            </span>
+                          </div>
+                          <PixelButton variant={vsEnabled ? 'primary' : 'secondary'} size="sm" onClick={toggleVaultSync}>
+                            {vsEnabled ? t('common.on') : t('common.off')}
+                          </PixelButton>
+                        </div>
+
+                        {vsEnabled && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 10 }}>
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <span style={slackLabelStyle}>{t('settings.memory.vaultPathLabel')}</span>
+                              <div style={{ display: 'flex', gap: 8 }}>
+                                <input
+                                  value={vaultPath}
+                                  onChange={(e) => setVaultPath(e.target.value)}
+                                  onBlur={() => stageKg({ vaultSync: { vaultPath } })}
+                                  placeholder={t('settings.memory.vaultPathPlaceholder')}
+                                  style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', flex: 1 }}
+                                />
+                                <PixelButton variant="secondary" size="sm" onClick={() => void chooseVaultPath()}>
+                                  {t('addAgent.pick')}
+                                </PixelButton>
+                              </div>
+                            </label>
+
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                              <span style={slackLabelStyle}>{t('settings.memory.vaultMappingsLabel')}</span>
+                              {vsProjects.length === 0 && (
+                                <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                                  {t('settings.memory.vaultNoMappings')}
+                                </span>
+                              )}
+                              {vsProjects.map((mapping, idx) => (
+                                <div
+                                  key={idx}
+                                  style={{
+                                    display: 'flex', flexDirection: 'column', gap: 6, padding: 8,
+                                    background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)'
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <select
+                                      value={mapping.repoOrigin ? (pathForOrigin(mapping.repoOrigin) ?? '') : ''}
+                                      onChange={(e) => { if (e.target.value) void pickVsProject(idx, e.target.value); }}
+                                      style={{ ...slackInputStyle, flex: 1 }}
+                                    >
+                                      <option value="">{t('settings.memory.vaultPickProject')}</option>
+                                      {(config.registeredRepos ?? []).map((p) => (
+                                        <option key={p} value={p}>{basenamePath(p)}</option>
+                                      ))}
+                                    </select>
+                                    {mapping.repoOrigin && !pathForOrigin(mapping.repoOrigin) && (
+                                      <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }} title={mapping.repoOrigin}>
+                                        {t('settings.memory.vaultUnlistedProject')}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <span
+                                      style={{
+                                        ...slackInputStyle, flex: 1, display: 'flex', alignItems: 'center',
+                                        fontFamily: 'var(--cth-font-mono)',
+                                        color: mapping.vaultFolder ? 'var(--cth-ink-900)' : 'var(--cth-ink-300)'
+                                      }}
+                                    >
+                                      {mapping.vaultFolder || t('settings.memory.vaultFolderPlaceholder')}
+                                    </span>
+                                    <PixelButton
+                                      variant="secondary" size="sm"
+                                      onClick={() => void pickVsFolder(idx)}
+                                      disabled={!vaultPath}
+                                    >
+                                      {t('addAgent.pick')}
+                                    </PixelButton>
+                                  </div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <input
+                                      value={mapping.slug}
+                                      onChange={(e) => {
+                                        const rows = vsProjects.slice();
+                                        rows[idx] = { ...rows[idx], slug: e.target.value };
+                                        updateVsProjects(rows);
+                                      }}
+                                      placeholder={t('settings.memory.vaultSlugPlaceholder')}
+                                      style={{ ...slackInputStyle, fontFamily: 'var(--cth-font-mono)', flex: 1 }}
+                                    />
+                                    <PixelButton variant="secondary" size="sm" onClick={() => removeVsMapping(idx)}>
+                                      {t('settings.memory.vaultRemoveMapping')}
+                                    </PixelButton>
+                                  </div>
+                                  {mapping.slug && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                      <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                                        {vsDocCounts[idx] === 1
+                                          ? t('settings.memory.docCount', { count: vsDocCounts[idx] })
+                                          : t('settings.memory.docCountPlural', { count: vsDocCounts[idx] ?? 0 })}
+                                      </span>
+                                      <PixelButton variant="secondary" size="sm" onClick={() => void toggleVsDocs(idx)}>
+                                        {vsDocsOpen[idx] ? t('settings.memory.vaultHideDocs') : t('settings.memory.vaultViewDocs')}
+                                      </PixelButton>
+                                    </div>
+                                  )}
+                                  {vsDocsOpen[idx] && (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 8, borderLeft: '2px solid var(--cth-ink-300)' }}>
+                                      {vsDocsBusy[idx] && (
+                                        <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.memory.adding')}</span>
+                                      )}
+                                      {!vsDocsBusy[idx] && (vsDocsList[idx] ?? []).length === 0 && (
+                                        <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>{t('settings.memory.vaultNoDocs')}</span>
+                                      )}
+                                      {(vsDocsList[idx] ?? []).map((doc) => (
+                                        <div key={doc.id}>
+                                          <button
+                                            type="button"
+                                            onClick={() => void previewVsDoc(idx, doc)}
+                                            style={{
+                                              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                                              width: '100%', padding: '4px 0', background: 'none', border: 'none', cursor: 'pointer',
+                                              fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)', textAlign: 'left'
+                                            }}
+                                          >
+                                            <span>{doc.title}</span>
+                                            <span style={{ color: 'var(--cth-ink-500)' }}>
+                                              {vsPreview[idx]?.docId === doc.id ? '▾' : '▸'}
+                                            </span>
+                                          </button>
+                                          {vsPreview[idx]?.docId === doc.id && (
+                                            <pre style={{
+                                              margin: '0 0 6px', padding: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                              maxHeight: 160, overflowY: 'auto',
+                                              background: 'var(--cth-paper-100)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-100)',
+                                              fontFamily: 'var(--cth-font-mono)', fontSize: 11, lineHeight: '16px', color: 'var(--cth-ink-700)'
+                                            }}>
+                                              {vsPreview[idx]!.text.slice(0, 800)}
+                                              {vsPreview[idx]!.text.length > 800 ? '…' : ''}
+                                            </pre>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              <PixelButton variant="secondary" size="sm" onClick={addVsMapping}>
+                                {t('settings.memory.vaultAddMapping')}
+                              </PixelButton>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                              <PixelButton
+                                variant="secondary" size="sm"
+                                onClick={() => void syncVaultNow()}
+                                disabled={vsSyncBusy || dirty}
+                              >
+                                {vsSyncBusy ? t('settings.memory.vaultSyncing') : t('settings.memory.vaultSyncNow')}
+                              </PixelButton>
+                              <span style={{ fontSize: 12, color: 'var(--cth-ink-500)' }}>
+                                {vsLastSync ? t('settings.memory.vaultLastSync', { time: formatAgo(vsLastSync) }) : t('settings.memory.vaultNeverSynced')}
+                              </span>
+                              {dirty && (
+                                <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>
+                                  {t('settings.memory.vaultSaveFirst')}
+                                </span>
+                              )}
+                              {vsNote && <span style={{ fontSize: 12, color: 'var(--cth-mint)' }}>{vsNote}</span>}
+                            </div>
                           </div>
                         )}
                       </div>

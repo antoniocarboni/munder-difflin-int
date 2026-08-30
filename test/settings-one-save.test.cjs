@@ -43,6 +43,31 @@ test('toggles stage their change instead of writing it', () => {
   }
 });
 
+// `knowledgeGraph` is a nested object patched from two places (the Knowledge
+// Graph toggle and the Vault Sync controls below it): `stage()` replaces
+// pending's TOP-LEVEL keys wholesale, so a raw `stage({ knowledgeGraph: ... })`
+// from either place would silently drop whatever the other had just staged.
+// Everything touching `knowledgeGraph` must go through `stageKg`, which merges
+// against both the saved config and whatever is already pending first.
+test('nothing patches knowledgeGraph directly — every write goes through stageKg', () => {
+  // stageKg's own body is the one legitimate call (mirrors saveAll being the
+  // one legitimate updateConfig call, above) — excise it before scanning.
+  const stageKgStart = MODAL.indexOf('const stageKg');
+  assert.ok(stageKgStart > 0, 'stageKg is gone');
+  const stageKgEnd = MODAL.indexOf('\n  };', stageKgStart);
+  const withoutStageKg = MODAL.slice(0, stageKgStart) + MODAL.slice(stageKgEnd);
+  const direct = withoutStageKg.match(/stage\(\{\s*knowledgeGraph:/g) ?? [];
+  assert.deepEqual(direct, [], 'a direct stage({ knowledgeGraph: ... }) call would clobber the other staged half');
+});
+
+test('stageKg merges against both the saved config and the pending patch', () => {
+  const i = MODAL.indexOf('const stageKg');
+  assert.ok(i > 0, 'stageKg is gone');
+  const body = MODAL.slice(i, MODAL.indexOf('\n  };', i));
+  assert.match(body, /mergeKnowledgeGraphPatch\(config\.knowledgeGraph, pending\.knowledgeGraph, patch\)/,
+    'stageKg must read both config (saved) and pending (staged) before composing the patch');
+});
+
 test('closing with staged changes asks first, instead of dropping them', () => {
   assert.match(MODAL, /const requestClose/, 'no close guard');
   const i = MODAL.indexOf('const requestClose');

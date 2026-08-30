@@ -72,3 +72,52 @@ test('ingestFileInto writes into the given root, not the global root; removeDocF
   assert.equal(removed, true);
   assert.equal(fs.existsSync(path.join(projRoot, 'docs', result.docId)), false);
 });
+
+// statusFor/listFor/getFrom back the Settings → Vault Sync panel's per-mapping
+// "N documents indexed" + preview — same shape as their global counterparts
+// (status/list/get), just pointed at a project's isolated store instead.
+test('statusFor reads a project store no differently than status() reads the global one', () => {
+  writeConfig({ knowledgeGraph: { enabled: true, vaultSync: { enabled: false, projects: [] } } });
+  const km = new KnowledgeManager();
+
+  assert.deepEqual(km.statusFor('never-synced'), { enabled: true, root: km.projectRoot('never-synced'), docCount: 0, chunkCount: 0, byModality: {} });
+
+  const projRoot = km.projectRoot('acme');
+  fs.mkdirSync(projRoot, { recursive: true });
+  const notePath = path.join(projRoot, '..', 'acme-note.md');
+  fs.writeFileSync(notePath, '# Onboarding\nStep one: set up your account.', 'utf8');
+  km.ingestFileInto(projRoot, notePath, { title: 'Onboarding' });
+
+  const status = km.statusFor('acme');
+  assert.equal(status.docCount, 1);
+  assert.equal(status.root, projRoot);
+
+  writeConfig({ knowledgeGraph: { enabled: false, vaultSync: { enabled: false, projects: [] } } });
+});
+
+test('listFor and getFrom read the SAME project root ingestFileInto wrote to, isolated from other projects and the global store', () => {
+  writeConfig({ knowledgeGraph: { enabled: true, vaultSync: { enabled: false, projects: [] } } });
+  const km = new KnowledgeManager();
+
+  const rootA = km.projectRoot('project-a');
+  fs.mkdirSync(rootA, { recursive: true });
+  const noteA = path.join(rootA, '..', 'a-note.md');
+  fs.writeFileSync(noteA, '# Project A\nSome content unique to A.', 'utf8');
+  const { docId } = km.ingestFileInto(rootA, noteA, { title: 'Project A' });
+
+  assert.equal(km.listFor('project-b').length, 0, 'an unsynced project must read as empty, not throw');
+  const listA = km.listFor('project-a');
+  assert.equal(listA.length, 1);
+  assert.equal(listA[0].title, 'Project A');
+
+  const doc = km.getFrom('project-a', docId);
+  assert.ok(doc);
+  assert.match(doc.text, /unique to A/);
+
+  // The doc must not be readable through a different project's root, or the
+  // global root — that isolation is the entire point of a per-project store.
+  assert.equal(km.getFrom('project-b', docId), null);
+  assert.equal(km.get(docId), null);
+
+  writeConfig({ knowledgeGraph: { enabled: false, vaultSync: { enabled: false, projects: [] } } });
+});

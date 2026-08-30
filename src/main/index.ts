@@ -6,7 +6,7 @@ import {
   readlinkSync, symlinkSync
 } from 'node:fs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { join, resolve, sep, basename, dirname, isAbsolute } from 'node:path';
+import { join, resolve, relative, sep, basename, dirname, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request as httpsRequest } from 'node:https';
 import { PtyManager, type SpawnOptions } from './pty';
@@ -22,7 +22,7 @@ import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
 import {
   getBranch, getStatus, getLog, getBranches, getAheadBehind, isRepo, getDiff, mainRepoRoot,
   addWorktree, removeWorktree, worktreeHasUnintegratedWork, worktreeIsGcSafe,
-  getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef
+  getLogGraph, getCommitFiles, getFileAtRev, compareRefs, listWorktrees, checkoutRef, getRemoteUrl
 } from './git';
 import { HiveManager, type AgentMeta, type HiveMessage, type HiveTask } from './hive';
 import { HookServer } from './hooks';
@@ -30,7 +30,7 @@ import { CircuitBreaker, type BreakerInput } from './breaker';
 import type { UsageProvider } from './usage';
 import { MemoryManager } from './memory';
 import { KnowledgeManager } from './knowledge';
-import { resolveProjectForCwd, runVaultSync } from './knowledgeVaultSync';
+import { resolveProjectForCwd, runVaultSync, type VaultSyncResult } from './knowledgeVaultSync';
 import { MemoryReflector, type ReflectSettings } from './reflect';
 import { PersistStore } from './db';
 import { readAgentUsage, readContextTokens, seedSessionTranscript, resolveSessionCwd } from './transcript';
@@ -2001,10 +2001,19 @@ const VAULT_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let vaultSyncTimer: ReturnType<typeof setInterval> | null = null;
 let vaultSyncInFlight = false;
 
-async function runVaultSyncTick(): Promise<void> {
-  if (vaultSyncInFlight) return;
+/** Outcome of one tick, surfaced to the renderer's "Sync now" button — the
+ *  daily timer only ever fire-and-forgets this (`void runVaultSyncTick()`),
+ *  so the return value costs it nothing. */
+interface VaultSyncTickResult {
+  ran: boolean;
+  result?: VaultSyncResult;
+  error?: string;
+}
+
+async function runVaultSyncTick(): Promise<VaultSyncTickResult> {
+  if (vaultSyncInFlight) return { ran: false, error: 'a sync is already running' };
   const kg = readConfig().knowledgeGraph;
-  if (!kg?.enabled || !kg.vaultSync?.enabled) return;
+  if (!kg?.enabled || !kg.vaultSync?.enabled) return { ran: false, error: 'vault sync is not enabled' };
   vaultSyncInFlight = true;
   try {
     const result = await runVaultSync(kg.vaultSync, knowledge);
@@ -2017,8 +2026,11 @@ async function runVaultSyncTick(): Promise<void> {
     // back the stale `kg` snapshot would silently revert that change.
     const freshKg = readConfig().knowledgeGraph;
     writeConfig({ knowledgeGraph: { ...freshKg, vaultSync: { ...freshKg?.vaultSync, lastSyncAt: Date.now() } } });
+    return { ran: true, result };
   } catch (e) {
-    console.error('[vault-sync] run failed:', e instanceof Error ? e.message : e);
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[vault-sync] run failed:', message);
+    return { ran: false, error: message };
   } finally {
     vaultSyncInFlight = false;
   }
@@ -3426,6 +3438,13 @@ ipcMain.handle('git:checkout', async (_evt, cwd: unknown, ref: unknown, detach: 
   }
   return checkoutRef(cwd, ref, detach === true);
 });
+// Origin URL for a repo path, used by the Vault Sync settings UI to resolve a
+// registered project's `repoOrigin` automatically — the operator picks a
+// project by name, never types or pastes a git remote URL by hand.
+ipcMain.handle('git:remoteUrl', (_evt, cwd: unknown) => {
+  if (typeof cwd !== 'string' || !cwd) return null;
+  return getRemoteUrl(cwd);
+});
 
 // ─── IPC: roster mirror (shared between dev and a packaged build) ───────────
 // The renderer's store is built synchronously at module load, before any async
@@ -3635,6 +3654,22 @@ ipcMain.handle('kg:get', (_evt, id: unknown) =>
   (typeof id === 'string' && id ? knowledge.get(id) : null));
 ipcMain.handle('kg:remove', (_evt, id: unknown) =>
   ({ ok: typeof id === 'string' && id ? knowledge.remove(id) : false }));
+// Project-scoped reads for the Settings → Vault Sync panel's "N documents
+// indexed" + preview. `slug` is checked against the CONFIGURED mappings, not
+// trusted as-is — the renderer only ever names a project it already shows,
+// but a raw string here would otherwise let any caller read an arbitrary
+// projects/<slug>/ directory under the knowledge root.
+function isMappedProjectSlug(slug: unknown): slug is string {
+  if (typeof slug !== 'string' || !slug) return false;
+  const projects = readConfig().knowledgeGraph?.vaultSync?.projects ?? [];
+  return projects.some((p) => p.slug === slug);
+}
+ipcMain.handle('kg:statusForProject', (_evt, slug: unknown) =>
+  (isMappedProjectSlug(slug) ? knowledge.statusFor(slug) : { enabled: false, root: '', docCount: 0, chunkCount: 0, byModality: {} }));
+ipcMain.handle('kg:listForProject', (_evt, slug: unknown) =>
+  (isMappedProjectSlug(slug) ? knowledge.listFor(slug) : []));
+ipcMain.handle('kg:getForProject', (_evt, slug: unknown, docId: unknown) =>
+  (isMappedProjectSlug(slug) && typeof docId === 'string' && docId ? knowledge.getFrom(slug, docId) : null));
 // Ingest one or more files from disk. Best-effort per file; returns per-file
 // results so the UI can report partial success.
 ipcMain.handle('kg:ingestFiles', (_evt, payload: unknown) => {
@@ -3670,6 +3705,34 @@ ipcMain.handle('kg:addFiles', async (evt) => {
   });
   return { ok: true as const, results };
 });
+// Pick a folder INSIDE the configured vault for one project mapping and hand
+// back the path relative to the vault root — the settings UI never asks the
+// operator to type or compute a relative path by hand. Rejects a folder
+// picked outside the vault the same way runVaultSync's own containment check
+// does (see knowledgeVaultSync.ts), so a bad pick can't reach config at all.
+ipcMain.handle('knowledge:chooseVaultSubfolder', async (evt, vaultPath: unknown) => {
+  const win = BrowserWindow.fromWebContents(evt.sender);
+  if (!win) return { ok: false as const, error: 'no window' };
+  if (typeof vaultPath !== 'string' || !vaultPath.trim()) {
+    return { ok: false as const, error: 'set the vault path first' };
+  }
+  const root = resolve(expandTilde(vaultPath));
+  const res = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory'],
+    defaultPath: root,
+    title: 'Pick a folder inside the vault'
+  });
+  if (res.canceled || res.filePaths.length === 0) return { ok: false as const, error: 'cancelled' };
+  const picked = resolve(res.filePaths[0]);
+  if (picked !== root && !picked.startsWith(root + sep)) {
+    return { ok: false as const, error: 'that folder is outside the vault' };
+  }
+  return { ok: true as const, relativePath: picked === root ? '.' : relative(root, picked) };
+});
+// Manual trigger for the Settings "Sync now" button — reuses the exact same
+// tick the daily timer fires (startVaultSyncTimer, above), so "sync now" and
+// "wait for the timer" can never drift into two different code paths.
+ipcMain.handle('knowledge:vaultSyncNow', () => runVaultSyncTick());
 
 // ─── IPC: composer attachments (images + arbitrary files, attached by PATH) ──
 // The message queue pipes raw text into a Claude CLI PTY, so attachments travel
