@@ -3262,6 +3262,11 @@ ipcMain.handle('jiraProjects:validate', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { binding?: unknown };
   const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
   if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  // Only the `key` shape is checked above; a malformed renderer payload with a
+  // non-array `agents` would otherwise reach `for (const agentId of
+  // binding.agents ?? [])` inside validateJiraProjectBinding and throw on a
+  // non-iterable (e.g. agents: "bob" or agents: 5).
+  if (binding.agents !== undefined && !Array.isArray(binding.agents)) return { ok: false, error: 'invalid binding' };
   const others = jiraProjects.listBindings().filter((b) => b.key.toUpperCase() !== binding.key.toUpperCase());
   return jiraProjects.validateJiraProjectBinding(binding, others, jiraValidationDeps());
 });
@@ -3270,6 +3275,7 @@ ipcMain.handle('jiraProjects:upsert', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { binding?: unknown };
   const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
   if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  if (binding.agents !== undefined && !Array.isArray(binding.agents)) return { ok: false, error: 'invalid binding' };
   return jiraProjects.upsertBinding(binding, jiraValidationDeps());
 });
 
