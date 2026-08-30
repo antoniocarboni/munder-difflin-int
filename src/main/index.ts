@@ -15,7 +15,7 @@ import { initAutoUpdater, abortPendingRestart } from './updater';
 import { RealtimeFloorWatcher } from './realtimeFloorWatcher';
 import {
   readConfig, writeConfig, setAgentTokenCap, resetConfig, onConfigWritten, ensureHarnessHome, ensureClaudePermissionsAccepted,
-  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
+  modelForRole, OPS_STANDUP_MISSION, HEARTBEAT_MISSION, JIRA_POLL_MISSION, COMPACT_MAINTENANCE_MISSION, type HarnessConfig, type ScheduledMission
 } from './config';
 import { listDir, readFileText, readFileBinary, writeFileText, statAbs, expandTilde } from './fs';
 import { normalizeWeekly, weeklyDelayMs } from '../shared/weeklySchedule';
@@ -60,7 +60,8 @@ import { analytics, isRendererMessageSurface } from './analytics';
 import type { SpawnFailReason } from './analytics';
 import { IntegrationBroker } from './integrationBroker';
 import * as integrations from './integrations';
-import { validateBaseUrl, buildAuthHeaders, resolveUpstreamUrl, secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
+import * as jiraProjects from './jiraProjects';
+import { secretRefFor, INTEGRATION_TEMPLATES } from '../shared/integrations';
 import { RosterStore } from './roster';
 import { buildWorkerLaunch } from './workerLaunch';
 import { ControlRegistry } from './control';
@@ -382,7 +383,11 @@ const liveWorkers = new Map<string, WorkerRec>();
  *  granted a per-worker capability token at spawn (revoked in teardownPty). */
 const integrationBroker = new IntegrationBroker({
   getRecord: integrations.getRecord,
-  getSecret: integrations.getSecret
+  getSecret: integrations.getSecret,
+  getJiraBindings: () => ({
+    bindings: jiraProjects.listBindings().filter((b) => b.enabled),
+    poll: readConfig().jiraPoll
+  })
 });
 
 /** BYOK backend model-providers whose API keys the non-Claude CLI engines
@@ -891,6 +896,15 @@ function archiveOrphanedAgents(): void {
   }
 }
 
+/** True when `id` is god, or a non-archived agent in the hive registry. Used to
+ *  validate JiraProjectBinding.agents at save time (jiraProjects.ts). */
+function agentExists(id: string): boolean {
+  const reg = hive.registry();
+  if (id === reg.godId) return true;
+  const a = reg.agents[id];
+  return !!a && !a.archived;
+}
+
 /** One-time migration: ensure the built-in hourly ops standup exists for installs
  *  that predate it. Guarded by `opsStandupSeeded` so a user who later deletes the
  *  mission doesn't get it re-added on every boot. Stamps lastFiredAt = now so the
@@ -918,6 +932,18 @@ function ensureDefaultMissions(): void {
       heartbeatSeeded: true
     });
   }
+  // Seed the Jira claim poll once. Shipped DISABLED (like the heartbeat) — it
+  // makes Jira transitions and creates kanban cards, so the user opts in from
+  // the Schedules panel once bindings are configured.
+  const cfg3 = readConfig();
+  if (!cfg3.jiraPollSeeded) {
+    const missions = cfg3.missions ?? [];
+    const has = missions.some((m) => m.id === JIRA_POLL_MISSION.id);
+    writeConfig({
+      missions: has ? missions : [...missions, { ...JIRA_POLL_MISSION, lastFiredAt: Date.now() }],
+      jiraPollSeeded: true
+    });
+  }
 
   // maint-1 RETIREMENT: `compact-maintenance` is no longer a mission. Scheduled
   // compaction is now the CONTEXT TRIGGER's job, so the operator has exactly one
@@ -932,13 +958,13 @@ function ensureDefaultMissions(): void {
   // the trigger can never be clobbered. That keeps the `*Seeded` convention's
   // promise (exactly once, ever) without a config flag that would only ever be
   // read here; `compactMaintenanceSeeded` is left set so nothing re-seeds it.
-  const cfg3 = readConfig();
-  const missions3 = cfg3.missions ?? [];
-  const retiring = missions3.find((m) => m.id === COMPACT_MAINTENANCE_MISSION.id);
+  const cfg4 = readConfig();
+  const missions4 = cfg4.missions ?? [];
+  const retiring = missions4.find((m) => m.id === COMPACT_MAINTENANCE_MISSION.id);
   if (retiring) {
-    const current = cfg3.contextTrigger ?? DEFAULT_CONTEXT_TRIGGER;
+    const current = cfg4.contextTrigger ?? DEFAULT_CONTEXT_TRIGGER;
     writeConfig({
-      missions: missions3.filter((m) => m.id !== COMPACT_MAINTENANCE_MISSION.id),
+      missions: missions4.filter((m) => m.id !== COMPACT_MAINTENANCE_MISSION.id),
       contextTrigger: {
         ...current,
         compact: {
@@ -974,11 +1000,11 @@ function ensureDefaultMissions(): void {
   // pressure gate, and it is what actually performed every one of these
   // compactions already — both paths have called emitContextTrigger since Triggers
   // landed. Idempotent, so it costs one no-op scan per boot once clean.
-  const cfg4 = readConfig();
-  const missions4 = cfg4.missions ?? [];
-  if (missions4.some((m) => m.autoCompact)) {
+  const cfg5 = readConfig();
+  const missions5 = cfg5.missions ?? [];
+  if (missions5.some((m) => m.autoCompact)) {
     writeConfig({
-      missions: missions4.map(({ autoCompact, ...rest }) => {
+      missions: missions5.map(({ autoCompact, ...rest }) => {
         void autoCompact;
         return rest;
       })
@@ -2768,6 +2794,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         ? (await resolveProjectForCwd(opts.cwd, vaultSyncCfg.projects ?? []))?.slug ?? null
         : null;
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env(projectSlug) };
+      // God-only broker capability: the jira-poll mission instructs god to call
+      // GET /jira-bindings via MD_BROKER_URL/MD_BROKER_TOKEN, but god is spawned
+      // through pty:spawn -> spawnAgentCore, not the ephemeral-worker path (below,
+      // ~processSpawnRequest) that already grants this to workers. Scoped to god
+      // only — least privilege, not a blanket grant to every spawned agent.
+      if (opts.hive?.isGod && integrationBroker.running()) {
+        const token = integrationBroker.grant(opts.id, integrations.enabledIds());
+        opts.env = { ...(opts.env ?? {}), MD_BROKER_URL: integrationBroker.url(), MD_BROKER_TOKEN: token };
+      }
     } catch (e) {
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
@@ -3136,27 +3171,7 @@ ipcMain.handle('providerKey:clear', (_evt, backend: unknown) => {
 ipcMain.handle('integrations:test', async (_evt, payload: unknown) => {
   const p = (payload ?? {}) as { id?: unknown; path?: unknown };
   if (typeof p.id !== 'string' || !p.id) return { ok: false, error: 'id required' };
-  const rec = integrations.getRecord(p.id);
-  if (!rec) return { ok: false, error: 'unknown integration' };
-  const probe = validateBaseUrl(rec.baseUrl);
-  if (!probe.ok) return { ok: false, error: probe.error };
-  // Confine the probe path through the SAME gate as the worker forward() path, so an
-  // absolute URL / backslash-host / traversal in p.path can't override the origin and
-  // exfiltrate the secret to an attacker host. Resolve (and reject) BEFORE the secret
-  // is ever materialized, so a bad path never even decrypts it.
-  const target = resolveUpstreamUrl(rec.baseUrl, typeof p.path === 'string' ? p.path : '');
-  if (!target) return { ok: false, error: 'path escapes the integration baseUrl', code: 'bad_request' };
-  const secret = integrations.getSecret(rec.secretRef);
-  const headers = buildAuthHeaders(rec.authType, rec.authHeader, secret);
-  try {
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 15_000);
-    const r = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: ac.signal });
-    clearTimeout(timer);
-    return { ok: r.ok, status: r.status };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+  return integrations.probeRecord(p.id, typeof p.path === 'string' ? p.path : undefined);
 });
 
 // ─── IPC: config ────────────────────────────────────────────────────────────
@@ -3180,7 +3195,31 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // transition so ordinary config writes never re-enter it.
   const hiveWasEnabled = hive.enabled();
   const wasOnboarded = readConfig().onboardingComplete;
-  const next = writeConfig(patch);
+  // Jira bindings can ONLY be created/edited/removed through the dedicated
+  // jiraProjects:upsert/jiraProjects:remove handlers, which validate every
+  // write (key format, agentExists, repo/branch checks, duplicate keys). This
+  // generic config:update path has none of that, so a `jiraProjects` key
+  // riding a patch here would be a second, unvalidated way to persist an
+  // invalid binding — close the door rather than duplicate validation.
+  // Nothing in this codebase relies on writing jiraProjects through this
+  // handler: upsertBinding/removeBinding (src/main/jiraProjects.ts) and the
+  // hive/jira-map.json migration (migrateJiraProjectsV1 in config.ts) all call
+  // writeConfig/persistConfig directly, bypassing this IPC handler entirely.
+  const { jiraProjects: _ignoredJiraProjects, ...safePatch } = patch;
+  let next = writeConfig(safePatch);
+  // The jira-poll mission's own `intervalMs` (seeded once by
+  // ensureDefaultMissions) is a separate field from jiraPoll.pollIntervalMs —
+  // the Settings UI only ever patches the latter, so without this the poll
+  // interval control silently never changed the mission's actual cadence.
+  const patchedPollMs = patch.jiraPoll?.pollIntervalMs;
+  if (typeof patchedPollMs === 'number') {
+    const missions = next.missions ?? [];
+    const idx = missions.findIndex((m) => m.id === 'jira-poll');
+    if (idx >= 0 && missions[idx].intervalMs !== patchedPollMs) {
+      const updatedMissions = missions.map((m, i) => (i === idx ? { ...m, intervalMs: patchedPollMs } : m));
+      next = writeConfig({ missions: updatedMissions });
+    }
+  }
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
   // Activation funnel (v0.4.6): onboarding just finished (false → true) — the top of
@@ -3199,6 +3238,54 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   }
   return next;
 });
+
+// ─── IPC: Jira project bindings ─────────────────────────────────────────────
+function jiraValidationDeps(): jiraProjects.JiraValidationDeps {
+  const jiraRecord = integrations.getRecord('jira');
+  const jiraUsable = !!jiraRecord?.enabled && integrations.hasSecret(jiraRecord.secretRef);
+  return {
+    isRepo,
+    getBranches,
+    agentExists,
+    testJiraKey: jiraUsable
+      ? async (key: string) => {
+        const r = await integrations.probeRecord('jira', `/project/${encodeURIComponent(key)}`);
+        return { ok: r.ok, status: r.status };
+      }
+      : undefined
+  };
+}
+
+ipcMain.handle('jiraProjects:list', () => jiraProjects.listBindings());
+
+ipcMain.handle('jiraProjects:validate', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { binding?: unknown };
+  const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
+  if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  // Only the `key` shape is checked above; a malformed renderer payload with a
+  // non-array `agents` would otherwise reach `for (const agentId of
+  // binding.agents ?? [])` inside validateJiraProjectBinding and throw on a
+  // non-iterable (e.g. agents: "bob" or agents: 5).
+  if (binding.agents !== undefined && !Array.isArray(binding.agents)) return { ok: false, error: 'invalid binding' };
+  const others = jiraProjects.listBindings().filter((b) => b.key.toUpperCase() !== binding.key.toUpperCase());
+  return jiraProjects.validateJiraProjectBinding(binding, others, jiraValidationDeps());
+});
+
+ipcMain.handle('jiraProjects:upsert', async (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { binding?: unknown };
+  const binding = p.binding as import('../shared/jiraProjects').JiraProjectBinding | undefined;
+  if (!binding || typeof binding.key !== 'string') return { ok: false, error: 'binding required' };
+  if (binding.agents !== undefined && !Array.isArray(binding.agents)) return { ok: false, error: 'invalid binding' };
+  return jiraProjects.upsertBinding(binding, jiraValidationDeps());
+});
+
+ipcMain.handle('jiraProjects:remove', (_evt, payload: unknown) => {
+  const p = (payload ?? {}) as { key?: unknown };
+  if (typeof p.key !== 'string' || !p.key) return { ok: false };
+  jiraProjects.removeBinding(p.key);
+  return { ok: true };
+});
+
 ipcMain.handle('config:setAgentTokenCap', (_evt, agentId: unknown, tokenCap: unknown) =>
   setAgentTokenCap(agentId, tokenCap)
 );

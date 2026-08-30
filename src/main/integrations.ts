@@ -23,7 +23,10 @@ import {
   type IntegrationRecord,
   validateIntegrationRecord,
   authTypeNeedsSecret,
-  secretRefFor
+  secretRefFor,
+  validateBaseUrl,
+  buildAuthHeaders,
+  resolveUpstreamUrl
 } from '../shared/integrations';
 import { readConfig, writeConfig } from './config';
 
@@ -77,6 +80,34 @@ export function removeRecord(id: string): { ok: boolean } {
 /** Records with the secretRef redacted to a boolean — the renderer-safe shape. */
 export function listRecordsRedacted(): Array<Omit<IntegrationRecord, 'secretRef'> & { hasSecret: boolean }> {
   return listRecords().map(({ secretRef, ...rest }) => ({ ...rest, hasSecret: !!secretRef && hasSecret(secretRef) }));
+}
+
+/** Probes one integration's reachability through its own auth path. Runs in
+ *  main so the secret is used but NEVER returned — only the upstream status.
+ *  Shared by the admin-only `integrations:test` IPC handler and by
+ *  jiraProjects.ts's remote Jira-key existence check (same upstream call,
+ *  different caller). */
+export async function probeRecord(
+  id: string,
+  path?: string
+): Promise<{ ok: boolean; status?: number; error?: string; code?: string }> {
+  const rec = getRecord(id);
+  if (!rec) return { ok: false, error: 'unknown integration' };
+  const probe = validateBaseUrl(rec.baseUrl);
+  if (!probe.ok) return { ok: false, error: probe.error };
+  const target = resolveUpstreamUrl(rec.baseUrl, typeof path === 'string' ? path : '');
+  if (!target) return { ok: false, error: 'path escapes the integration baseUrl', code: 'bad_request' };
+  const secret = getSecret(rec.secretRef);
+  const headers = buildAuthHeaders(rec.authType, rec.authHeader, secret);
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15_000);
+    const r = await fetch(target, { method: 'GET', headers, redirect: 'manual', signal: ac.signal });
+    clearTimeout(timer);
+    return { ok: r.ok, status: r.status };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 // ─── Secret store (encrypted at rest) ────────────────────────────────────────

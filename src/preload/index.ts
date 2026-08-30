@@ -20,6 +20,8 @@ import type {
 export type {
   ContextRule, ContextTriggerConfig, OrgTriggerConfig, TriggerHistoryEntry, WebhookTrigger
 } from '../shared/triggers';
+import type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
+export type { JiraProjectBinding, JiraPollSettings } from '../shared/jiraProjects';
 
 /** Renderer-visible integration record: the secretRef handle is redacted to a
  *  presence boolean. Matches main `integrations.listRecordsRedacted()` — the
@@ -270,6 +272,10 @@ export interface HarnessConfig {
   /** Recently-opened hive home folders (most-recent first). Mirrors src/main/config.ts. */
   recentHives?: string[];
   registeredRepos: string[];
+  jiraProjects: JiraProjectBinding[];
+  jiraPoll: JiraPollSettings;
+  jiraProjectsImported?: boolean;
+  jiraPollSeeded?: boolean;
   autoMode: boolean;
   defaultCommand: string;
   defaultModel?: string;
@@ -1288,6 +1294,17 @@ const api = {
     ipcRenderer.invoke('integrations:remove', req),
   integrationsTest: (req: { id: string; path?: string }): Promise<{ ok: boolean; status?: number; error?: string }> =>
     ipcRenderer.invoke('integrations:test', req),
+
+  // ─── Jira project bindings (Settings → Connections) ──────────────────────
+  jiraProjectsList: (): Promise<JiraProjectBinding[]> =>
+    ipcRenderer.invoke('jiraProjects:list'),
+  jiraProjectsValidate: (binding: JiraProjectBinding): Promise<{ ok: true } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('jiraProjects:validate', { binding }),
+  jiraProjectsUpsert: (binding: JiraProjectBinding): Promise<{ ok: true; bindings: JiraProjectBinding[] } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('jiraProjects:upsert', { binding }),
+  jiraProjectsRemove: (key: string): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('jiraProjects:remove', { key }),
+
   // Per-CLI-provider BYOK keys — WRITE-ONLY. `providerKeySet` stores a backend key one
   // way (never echoed); `providerKeyHas` returns only a boolean; no method ever returns
   // the plaintext. Keys are materialized MAIN-ONLY at spawn.
