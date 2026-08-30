@@ -104,7 +104,11 @@ on one):
   `{ bindings: [{key, repo, baseBranch, agents}], poll: {pollIntervalMs,
   assigneeFilter, statusFilter} }` — the active Jira project ↔ repo ↔ agent
   map, config-backed, no file to read. Any valid broker token can call it
-  (it's config data, not a credentialed integration proxy).
+  (it's config data, not a credentialed integration proxy). Reach it at
+  `$MD_BROKER_URL/jira-bindings`, authenticating with `$MD_BROKER_TOKEN` in
+  either an `X-MD-Broker-Token: <token>` header or an
+  `Authorization: Bearer <token>` header — both env vars are pre-set in your
+  environment when this capability is available to you.
 
 As additional brokered integrations land (calendar, mail, docs, web fetch, …),
 they follow the same shape: a brokered, credential-free call discoverable at run

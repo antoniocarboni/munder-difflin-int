@@ -2794,6 +2794,15 @@ async function spawnAgentCore(opts: AgentSpawnOptions, owner: Electron.WebConten
         ? (await resolveProjectForCwd(opts.cwd, vaultSyncCfg.projects ?? []))?.slug ?? null
         : null;
       opts.env = { ...(opts.env ?? {}), ...inj.env, ...memory.env(), ...knowledge.env(projectSlug) };
+      // God-only broker capability: the jira-poll mission instructs god to call
+      // GET /jira-bindings via MD_BROKER_URL/MD_BROKER_TOKEN, but god is spawned
+      // through pty:spawn -> spawnAgentCore, not the ephemeral-worker path (below,
+      // ~processSpawnRequest) that already grants this to workers. Scoped to god
+      // only — least privilege, not a blanket grant to every spawned agent.
+      if (opts.hive?.isGod && integrationBroker.running()) {
+        const token = integrationBroker.grant(opts.id, integrations.enabledIds());
+        opts.env = { ...(opts.env ?? {}), MD_BROKER_URL: integrationBroker.url(), MD_BROKER_TOKEN: token };
+      }
     } catch (e) {
       // Hive provisioning is best-effort; never block a spawn on it.
       console.error('[hive] ensureAgent failed:', e);
