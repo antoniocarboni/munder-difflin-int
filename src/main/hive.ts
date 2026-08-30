@@ -2031,6 +2031,18 @@ export class HiveManager {
       },
       ...(model ? { env: { ...(typeof existing.env === 'object' && existing.env ? existing.env : {}), MODEL: model } } : {})
     };
+    // DeepCode's own in-TUI `/model` command persists the operator's choice
+    // into these SAME three keys on this SAME file — and that `model` key
+    // outranks `env.MODEL` on DeepCode's next launch. Left alone, a manual
+    // `/model` switch during a session would silently survive a later
+    // munder-difflin restart, making the agent run on a model the UI no
+    // longer shows. Munder-difflin owns model selection for its agents (same
+    // as it does for Claude/GPT), so every write here clears them — a
+    // restart always reflects what's configured in munder-difflin, never a
+    // leftover in-session switch.
+    delete (merged as Record<string, unknown>).model;
+    delete (merged as Record<string, unknown>).thinkingEnabled;
+    delete (merged as Record<string, unknown>).reasoningEffort;
     try {
       mkdirSync(dirname(settingsPath), { recursive: true });
       writeFileSync(settingsPath, JSON.stringify(merged, null, 2));
