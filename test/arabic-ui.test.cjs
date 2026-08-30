@@ -210,6 +210,7 @@ test('no Arabic string is left as its English source', () => {
     'onboarding.providerBlurb.gemini',
     'addAgent.projectPlaceholder',           // /path/to/your/project — a filesystem path
     'onboarding.home.placeholder',           // /path/to/HarnessAgents — same
+    'settings.memory.vaultPathPlaceholder',  // /path/to/Obsidian/SecondBrain — same
     'mcpDefaults.toggleNote',                // "{{id}}: {{state}}" — pure interpolation
     'webhooksSection.summary'                // "{{count}} · {{state}}" — same
   ]);

@@ -48,10 +48,29 @@ export interface CircuitBreakerConfig {
   tokenVelocityPerMin?: number;
 }
 
+/** One Obsidian project folder mapped to a munder-difflin repo (mirrors
+ *  src/main/config.ts VaultProjectMapping). Matched to an agent by git
+ *  `origin`, never by filesystem path. */
+export interface VaultProjectMapping {
+  slug: string;
+  repoOrigin: string;
+  vaultFolder: string;
+}
+
+/** Daily sync from an Obsidian vault into per-project Knowledge Graph stores
+ *  (mirrors src/main/config.ts VaultSyncConfig). */
+export interface VaultSyncConfig {
+  enabled?: boolean;
+  vaultPath?: string;
+  projects?: VaultProjectMapping[];
+  lastSyncAt?: number;
+}
+
 /** Enterprise Knowledge Graph config (mirrors src/main/config.ts KnowledgeGraphConfig). */
 export interface KnowledgeGraphConfig {
   enabled?: boolean;
   rootPath?: string;
+  vaultSync?: VaultSyncConfig;
 }
 
 export interface HarnessConfig {

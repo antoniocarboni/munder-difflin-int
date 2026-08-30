@@ -144,4 +144,28 @@ export class KnowledgeManager {
   remove(docId: string): boolean {
     return core.removeDoc(this.root(), docId);
   }
+
+  /** Project-scoped mirrors of status/list/get, for the Settings → Vault Sync
+   *  panel's "N documents indexed" + preview — reads a mapped project's
+   *  ISOLATED store instead of the global one. Same existsSync guard as their
+   *  global counterparts: a project that has never synced (no store on disk
+   *  yet) reads as empty, not an error. */
+  statusFor(slug: string): KnowledgeStatus {
+    const enabled = this.active();
+    const root = this.projectRoot(slug);
+    const s = enabled && existsSync(root)
+      ? core.stats(root)
+      : { docCount: 0, chunkCount: 0, byModality: {} };
+    return { enabled, root, docCount: s.docCount, chunkCount: s.chunkCount, byModality: s.byModality };
+  }
+
+  listFor(slug: string): KgMeta[] {
+    const root = this.projectRoot(slug);
+    if (!existsSync(root)) return [];
+    return core.list(root);
+  }
+
+  getFrom(slug: string, docId: string): { meta: KgMeta; text: string } | null {
+    return core.getDoc(this.projectRoot(slug), docId);
+  }
 }

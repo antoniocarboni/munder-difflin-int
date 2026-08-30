@@ -137,6 +137,28 @@ test('a git worktree cwd (`.git` is a pointer FILE) resolves to the shared commo
   );
 });
 
+test('a leftover model/thinkingEnabled/reasoningEffort from DeepCode\'s own in-TUI `/model` command is cleared on the next munder-difflin write, so a restart cannot silently keep running a model the UI no longer shows', () => {
+  const hive = new HiveManager(() => userData);
+  const cwd = agentCwd();
+  fs.mkdirSync(path.join(cwd, '.deepcode'), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, '.deepcode', 'settings.json'),
+    JSON.stringify({
+      env: { MODEL: 'deepseek-v4-pro' },
+      model: 'deepseek-v4-flash',
+      thinkingEnabled: true,
+      reasoningEffort: 'max'
+    }),
+    'utf8'
+  );
+  hive.installDeepcodeSettings({ id: 'a12', name: 'A', cwd }, true, 'deepseek-v4-pro');
+  const s = readSettings(cwd);
+  assert.equal(s.env.MODEL, 'deepseek-v4-pro');
+  assert.equal(s.model, undefined, 'stale in-TUI model override must not survive a munder-difflin write');
+  assert.equal(s.thinkingEnabled, undefined);
+  assert.equal(s.reasoningEffort, undefined);
+});
+
 test('a non-git cwd is a silent no-op — no .git directory is created, and the settings write still succeeds', () => {
   const hive = new HiveManager(() => userData);
   const cwd = agentCwd();
