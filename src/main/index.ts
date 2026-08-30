@@ -3195,7 +3195,31 @@ ipcMain.handle('config:update', (_evt, patch: Partial<HarnessConfig>) => {
   // transition so ordinary config writes never re-enter it.
   const hiveWasEnabled = hive.enabled();
   const wasOnboarded = readConfig().onboardingComplete;
-  const next = writeConfig(patch);
+  // Jira bindings can ONLY be created/edited/removed through the dedicated
+  // jiraProjects:upsert/jiraProjects:remove handlers, which validate every
+  // write (key format, agentExists, repo/branch checks, duplicate keys). This
+  // generic config:update path has none of that, so a `jiraProjects` key
+  // riding a patch here would be a second, unvalidated way to persist an
+  // invalid binding — close the door rather than duplicate validation.
+  // Nothing in this codebase relies on writing jiraProjects through this
+  // handler: upsertBinding/removeBinding (src/main/jiraProjects.ts) and the
+  // hive/jira-map.json migration (migrateJiraProjectsV1 in config.ts) all call
+  // writeConfig/persistConfig directly, bypassing this IPC handler entirely.
+  const { jiraProjects: _ignoredJiraProjects, ...safePatch } = patch;
+  let next = writeConfig(safePatch);
+  // The jira-poll mission's own `intervalMs` (seeded once by
+  // ensureDefaultMissions) is a separate field from jiraPoll.pollIntervalMs —
+  // the Settings UI only ever patches the latter, so without this the poll
+  // interval control silently never changed the mission's actual cadence.
+  const patchedPollMs = patch.jiraPoll?.pollIntervalMs;
+  if (typeof patchedPollMs === 'number') {
+    const missions = next.missions ?? [];
+    const idx = missions.findIndex((m) => m.id === 'jira-poll');
+    if (idx >= 0 && missions[idx].intervalMs !== patchedPollMs) {
+      const updatedMissions = missions.map((m, i) => (i === idx ? { ...m, intervalMs: patchedPollMs } : m));
+      next = writeConfig({ missions: updatedMissions });
+    }
+  }
   // Live opt-in/out from Settings → Privacy (TELEMETRY.md).
   if (typeof patch?.telemetryEnabled === 'boolean') analytics.setEnabled(patch.telemetryEnabled);
   // Activation funnel (v0.4.6): onboarding just finished (false → true) — the top of
