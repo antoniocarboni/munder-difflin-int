@@ -79,7 +79,7 @@ export function parseJiraMapJson(raw: string): { bindings: JiraProjectBinding[];
     const rp = p as Record<string, unknown>;
     if (typeof rp.key !== 'string' || typeof rp.repo !== 'string' || typeof rp.baseBranch !== 'string') continue;
     bindings.push({
-      key: rp.key,
+      key: rp.key.trim().toUpperCase(),
       repo: rp.repo,
       baseBranch: rp.baseBranch,
       agents: Array.isArray(rp.agents) ? rp.agents.filter((a): a is string => typeof a === 'string') : undefined,
