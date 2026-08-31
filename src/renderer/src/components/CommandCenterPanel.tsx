@@ -20,6 +20,7 @@ import { useFleetTelemetry } from '@/hooks/useTelemetry';
 import { COMMAND_GROUPS } from '@shared/claudeCommands';
 import { roleForHiveSpawn } from '@shared/agentRole';
 import { useStore, triggerHistoryVisible, type Agent } from '@/store/store';
+import { projectTag, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 import { usePtyParser } from '@/hooks/usePtyParser';
 import {
   buildSpawnCommand,
@@ -347,6 +348,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
   const { t } = useTranslation();
   const rtl = useRtl();
   const agents = useStore((s) => s.agents);
+  useResolvedRepoNames(agents);
   const godName = agents.find((a) => a.isGod)?.name ?? 'the orchestrator';
   const select = useStore((s) => s.select);
   const updateAgent = useStore((s) => s.updateAgent);
@@ -647,7 +649,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
           <Select value={dispatchTo} onChange={setDispatchTo}>
             <option value="">{t('commandCenter.michaelDecides', { godName })}</option>
             {agents.filter((a) => !a.isGod).map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
+              <option key={a.id} value={a.id}>{a.name}{projectTag(a)}</option>
             ))}
           </Select>
         </div>
@@ -707,7 +709,7 @@ function FloorTab({ seed }: { seed: { text: string; seq: number } }) {
                   border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
                   fontFamily: 'var(--cth-font-ui)', fontSize: 12, color: 'var(--cth-ink-900)'
                 }}
-              >{a.name}{a.isGod ? t('commandCenter.godTag') : ''}</button>
+              >{a.name}{projectTag(a)}{a.isGod ? t('commandCenter.godTag') : ''}</button>
               <PixelBadge status={armed ? 'looping' : a.status} />
               {armed && <span title={breaker?.reason} style={{ color: 'var(--cth-coral)', fontSize: 12 }}>⚠</span>}
               <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--cth-ink-500)' }}>
@@ -1063,6 +1065,7 @@ function ArchivedSection() {
 function MemoryTab({ godId, who: controlledWho, onWho }: { godId: string; who?: string; onWho?: (id: string) => void }) {
   const { t } = useTranslation();
   const agents = useStore((s) => s.agents);
+  useResolvedRepoNames(agents);
   // Selection is controllable from the graph tab; falls back to local state.
   const [internalWho, setInternalWho] = useState<string>(godId);
   const who = controlledWho ?? internalWho;
@@ -1146,7 +1149,7 @@ function MemoryTab({ godId, who: controlledWho, onWho }: { godId: string; who?: 
 
       <Section title={t('commandCenter.memoryFile')}>
         <Select value={who} onChange={setWho}>
-          {agents.map((a) => (<option key={a.id} value={a.id}>{a.name}</option>))}
+          {agents.map((a) => (<option key={a.id} value={a.id}>{a.name}{projectTag(a)}</option>))}
         </Select>
         <Pre>{mem || t('commandCenter.noMemory')}</Pre>
       </Section>
