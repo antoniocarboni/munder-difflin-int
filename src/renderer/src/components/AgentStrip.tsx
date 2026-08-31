@@ -7,6 +7,7 @@ import { useStore, type Agent } from '@/store/store';
 import { type HarnessConfig } from '@/store/config';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
 import { useRtl } from '@/i18n/useDirection';
+import { projectTag, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentStripProps {
   /** Needed to rebuild a spawn command when a restorable agent predates the
@@ -19,6 +20,9 @@ export function AgentStrip({ config }: AgentStripProps) {
   const rtl = useRtl();
   const agents = useStore(s => s.agents);
   const restorableAgents = useStore(s => s.restorableAgents);
+  // Restorable agents from a past session are shown in one flat list — the
+  // exact place two same-named agents from different projects would collide.
+  useResolvedRepoNames(restorableAgents);
   const selectedId = useStore(s => s.selectedId);
   const select = useStore(s => s.select);
   const setAddAgentOpen = useStore(s => s.setAddAgentOpen);
@@ -252,7 +256,7 @@ export function AgentStrip({ config }: AgentStripProps) {
           style={{ alignSelf: 'center', flexShrink: 0, marginLeft: 'auto' }}
           title={restoreBusy
             ? t('agentStrip.restoringTitle')
-            : t('agentStrip.restoreTitle', { names: restorableAgents.map((a: Agent) => a.name).join(', ') })}
+            : t('agentStrip.restoreTitle', { names: restorableAgents.map((a: Agent) => `${a.name}${projectTag(a)}`).join(', ') })}
         >
           <PixelButton
             variant="primary"
@@ -294,7 +298,7 @@ export function AgentStrip({ config }: AgentStripProps) {
             {restorableAgents.map((a: Agent) => (
               <span
                 key={a.id}
-                title={t('agentStrip.restorable', { name: a.name })}
+                title={t('agentStrip.restorable', { name: `${a.name}${projectTag(a)}` })}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   height: 26, padding: '0 4px 0 8px',
@@ -304,15 +308,15 @@ export function AgentStrip({ config }: AgentStripProps) {
                 }}
               >
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.name}
+                  {a.name}{projectTag(a)}
                 </span>
                 <span style={{ fontSize: 11, color: 'var(--cth-ink-500)', whiteSpace: 'nowrap' }}>
                   {a.description ? a.description.slice(0, 24) : ''}
                 </span>
                 <button
                   onClick={() => useStore.getState().removeRestorableAgent(a.id)}
-                  title={t('agentStrip.dismiss', { name: a.name })}
-                  aria-label={t('agentStrip.dismissAria', { name: a.name })}
+                  title={t('agentStrip.dismiss', { name: `${a.name}${projectTag(a)}` })}
+                  aria-label={t('agentStrip.dismissAria', { name: `${a.name}${projectTag(a)}` })}
                   style={{
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                     width: 18, height: 18, padding: 0, lineHeight: 1,

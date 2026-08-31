@@ -19,6 +19,7 @@ import { Icon } from './Icon';
 import { AgentNameEditor } from './AgentNameEditor';
 import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
+import { repoLabelOf, useResolvedRepoNames } from '@/hooks/useResolvedRepoNames';
 
 export interface AgentDetailPanelProps {
   agent: Agent;
@@ -26,6 +27,7 @@ export interface AgentDetailPanelProps {
 
 export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
   const { t } = useTranslation();
+  useResolvedRepoNames([agent]);
   const [openTerminalState, setOpenTerminalState] = useState<'idle' | 'opening' | 'ok' | 'error'>('idle');
   const [openTerminalError, setOpenTerminalError] = useState<string | undefined>();
   const [editOpen, setEditOpen] = useState(false);
@@ -169,7 +171,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
             <span style={{
               fontSize: 12, color: 'var(--cth-ink-500)',
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
-            }}>{agent.project}</span>
+            }}>{repoLabelOf(agent)}</span>
           </div>
         </div>
         <PixelButton variant="secondary" size="sm" onClick={() => setEditOpen(true)}>
@@ -187,7 +189,7 @@ export function AgentDetailPanel({ agent }: AgentDetailPanelProps) {
         <PixelButton variant="secondary" size="sm" onClick={() => useStore.getState().setIdeOpen(true, agent.id)}>
           <span
             className="cth-tip cth-tip-wrap"
-            data-tip={t('agentDetail.ideTip', { project: agent.project })}
+            data-tip={t('agentDetail.ideTip', { project: repoLabelOf(agent) })}
             aria-label={t('agentDetail.openIde')}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
           >

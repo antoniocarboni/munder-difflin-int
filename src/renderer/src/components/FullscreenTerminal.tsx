@@ -17,6 +17,7 @@ import { CostHud } from '@/realtime/CostHud';
 import { useStore, type Agent } from '@/store/store';
 import { usePtyParser } from '@/hooks/usePtyParser';
 import { useRestoreTeam } from '@/hooks/useRestoreTeam';
+import { basename, repoKeyOf, repoLabelOf, useResolvedRepoNames, projectTag } from '@/hooks/useResolvedRepoNames';
 import { useTerminalFontSize } from './terminalFontSize';
 import { useHasTerminalDraft, disposeTerminal, reflowTerminal, notifyThemeChangeAll } from './terminalPool';
 import { useAppTheme, toggleAppTheme } from '@/design/theme';
@@ -53,75 +54,6 @@ function rosterScale(zoom: number) {
     portraitScale,
     portrait: Math.round(PORTRAIT_W * portraitScale)
   };
-}
-
-function basename(path: string): string {
-  // Split on BOTH separators: `git:mainRepo` hands back whatever the platform
-  // uses, and a Windows `C:\work\repo` contains no '/' at all — so a '/'-only
-  // split returned the whole absolute path as the group's "name".
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-/** cwd → main-repo basename, resolved once per path and shared by every mount.
- *  An isolated agent's cwd is its own git worktree (`…/worktrees/<agent-id>`),
- *  so naming the group after that path buckets each such agent under its own id
- *  instead of the repository the user actually picked. `git:mainRepo` follows a
- *  linked worktree back to its main checkout. */
-const repoRootByCwd = new Map<string, string | null>();
-/** cwds with a lookup in flight, so a re-render can't start a second one. */
-const repoLookupsInFlight = new Set<string>();
-
-/** Which repository an agent belongs to — the ABSOLUTE root, so it is a real
- *  identity. Two unrelated checkouts can share a basename (`~/client-a/app` and
- *  `~/client-b/app`); keying groups on the name merged them into one section and
- *  let agents be dragged between two different repositories.
- *
- *  Falls back to the cwd itself until the async resolution lands, and for
- *  directories that aren't git repos at all. */
-function repoKeyOf(agent: Agent): string {
-  return repoRootByCwd.get(agent.cwd) || agent.cwd || 'unknown';
-}
-
-/** What that group is CALLED — the basename, or the project the user picked. */
-function repoLabelOf(agent: Agent): string {
-  const root = repoRootByCwd.get(agent.cwd);
-  if (root) return basename(root);
-  const project = agent.project?.trim();
-  if (project) return project;
-  return basename(agent.cwd) || 'unknown';
-}
-
-/** Resolve every distinct cwd's repository root, then re-render. Exactly one git
- *  call per distinct path, ever. */
-function useResolvedRepoNames(agents: Agent[]): number {
-  const [version, setVersion] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    const pending = [...new Set(agents.map(a => a.cwd).filter(Boolean))]
-      // `has` (not a truthiness check) so a resolved-to-null path — a cwd that
-      // is not a git repo — counts as answered. Caching only successes meant
-      // every agent outside a repo re-asked on each pass, and this effect
-      // depends on `agents`, which the pty parser replaces on every chunk of
-      // terminal output: one such agent spawned `git rev-parse` continuously
-      // for as long as it was talking. In-flight paths are skipped too, so a
-      // re-render mid-lookup doesn't stack a second round of subprocesses.
-      .filter(cwd => !repoRootByCwd.has(cwd) && !repoLookupsInFlight.has(cwd));
-    if (pending.length === 0) return;
-    pending.forEach(cwd => repoLookupsInFlight.add(cwd));
-    void Promise.all(pending.map(async (cwd) => {
-      try {
-        repoRootByCwd.set(cwd, (await window.cth.gitMainRepo(cwd)) || null);
-      } catch {
-        // Record the failure as answered as well — retrying a path that throws
-        // is what the unbounded-subprocess bug was made of.
-        repoRootByCwd.set(cwd, null);
-      } finally {
-        repoLookupsInFlight.delete(cwd);
-      }
-    })).then(() => { if (!cancelled) setVersion(v => v + 1); });
-    return () => { cancelled = true; };
-  }, [agents]);
-  return version;
 }
 
 /** The roster section an agent lives in — god agents share one ungrouped
@@ -720,7 +652,7 @@ function SidebarRow({
         onDrop={(e) => { e.preventDefault(); drag.drop(agent.id); }}
         onDragEnd={drag.end}
         onClick={onClick}
-        aria-label={`${agent.name} · ${agent.project}`}
+        aria-label={`${agent.name} · ${repoLabelOf(agent)}`}
         aria-current={active ? 'true' : undefined}
         style={{
           width: '100%',
@@ -810,7 +742,7 @@ function SidebarRow({
               flex: 1, minWidth: 0,
               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
             }} title={agent.worktreePath || agent.cwd}>
-              {basename(agent.worktreePath || agent.cwd) || agent.project}
+              {basename(agent.worktreePath || agent.cwd) || repoLabelOf(agent)}
             </span>
           </div>
           <ContextBar tokens={agent.contextTokens} limit={agent.contextLimit} accent={agent.accent} />
@@ -923,6 +855,11 @@ function Header({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
   const typing = useHasTerminalDraft(agent.ptyId);
   const archiveAgent = useStore((st) => st.archiveAgent);
   const [openState, setOpenState] = useState<'idle' | 'opening' | 'ok' | 'error'>('idle');
+  // This header carries no other project context (unlike the grouped roster
+  // row), so it is the one spot where the name alone really can read as
+  // ambiguous — a second same-named agent on another project, opened
+  // fullscreen, would look identical.
+  useResolvedRepoNames([agent]);
 
   /** Same action as the docked panel: open the OS terminal in this agent's
    *  working directory. Fullscreen had no way to do it, which is backwards —
@@ -961,7 +898,7 @@ function Header({ agent, onEdit }: { agent: Agent; onEdit: () => void }) {
       <span style={{
         fontFamily: 'var(--cth-font-display)', fontSize: 10, lineHeight: '16px',
         color: 'var(--cth-ink-900)'
-      }}>{agent.name.toUpperCase()}</span>
+      }}>{agent.name.toUpperCase()}{projectTag(agent).toUpperCase()}</span>
       {/* Edit belongs with the NAME, not with the action cluster on the right:
           it changes who this agent is, and the right-hand group is things you do
           with the agent. Icon-only because it sits inside the identity line —
