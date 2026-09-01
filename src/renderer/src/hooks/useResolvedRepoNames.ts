@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Agent } from '@/store/store';
+import type { JiraProjectBinding } from '@shared/jiraProjects';
 
 // Extracted from FullscreenTerminal.tsx (its roster-grouping logic) so
 // CommandCenterPanel, AgentStrip, and AgentDetailPanel can show the SAME
@@ -41,14 +42,60 @@ export function repoLabelOf(agent: Agent): string {
   return basename(agent.cwd) || 'unknown';
 }
 
+/** Jira project bindings (Settings → Connections → Jira Projects), fetched
+ *  once and shared module-wide, the same way `repoRootByCwd` is — so the
+ *  agent tag can also carry the Jira KEY a project is bound to (e.g. "BURD"),
+ *  not just its repo name. `null` = not fetched yet; `[]` is a valid "none
+ *  configured" answer, so it must stay distinguishable from "not fetched". */
+let jiraBindings: JiraProjectBinding[] | null = null;
+let jiraBindingsPromise: Promise<JiraProjectBinding[]> | null = null;
+function loadJiraBindings(): Promise<JiraProjectBinding[]> {
+  if (jiraBindings) return Promise.resolve(jiraBindings);
+  if (!jiraBindingsPromise) {
+    jiraBindingsPromise = window.cth.jiraProjectsList()
+      .catch(() => [] as JiraProjectBinding[])
+      .then((list) => { jiraBindings = list; return list; });
+  }
+  return jiraBindingsPromise;
+}
+
+/** Whether an (enabled) binding covers this repo root and this agent — a
+ *  binding scoped to specific `agents` applies only to those; an unscoped
+ *  one (empty or absent `agents`) covers every agent in that repo. Pulled
+ *  out of `jiraKeyFor` as its own pure function purely so it is unit-testable
+ *  without a mounted React tree (the module-private caches it reads from
+ *  need one to populate). */
+export function bindingMatches(binding: JiraProjectBinding, repoRoot: string, agentId: string): boolean {
+  return binding.enabled && binding.repo === repoRoot
+    && (!binding.agents || binding.agents.length === 0 || binding.agents.includes(agentId));
+}
+
+/** The Jira key bound to an agent's repo, if any — matched on the resolved
+ *  repo ROOT (never the raw cwd, which is the agent's own worktree for an
+ *  isolated agent), and only once that root has actually resolved. */
+export function jiraKeyFor(agent: Agent): string | undefined {
+  if (!jiraBindings) return undefined;
+  const root = repoRootByCwd.get(agent.cwd);
+  if (!root) return undefined;
+  return jiraBindings.find((b) => bindingMatches(b, root, agent.id))?.key;
+}
+
 /** Resolve every distinct cwd's repository root, then re-render. Exactly one git
  *  call per distinct path, ever — the cache above is module-level, so every
  *  caller of this hook (roster, pickers, toasts, detail headers) shares the
- *  same resolved names and only pays for a lookup once across all of them. */
+ *  same resolved names and only pays for a lookup once across all of them.
+ *
+ *  Also (best-effort, once) loads the Jira project bindings `jiraKeyFor`
+ *  reads from — piggybacked on this same effect rather than a second hook,
+ *  since every caller of this one already wants a re-render once either
+ *  piece of data lands. */
 export function useResolvedRepoNames(agents: Agent[]): number {
   const [version, setVersion] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    if (!jiraBindings) {
+      void loadJiraBindings().then(() => { if (!cancelled) setVersion(v => v + 1); });
+    }
     const pending = [...new Set(agents.map(a => a.cwd).filter(Boolean))]
       // `has` (not a truthiness check) so a resolved-to-null path — a cwd that
       // is not a git repo — counts as answered. Caching only successes meant
@@ -58,7 +105,7 @@ export function useResolvedRepoNames(agents: Agent[]): number {
       // for as long as it was talking. In-flight paths are skipped too, so a
       // re-render mid-lookup doesn't stack a second round of subprocesses.
       .filter(cwd => !repoRootByCwd.has(cwd) && !repoLookupsInFlight.has(cwd));
-    if (pending.length === 0) return;
+    if (pending.length === 0) return () => { cancelled = true; };
     pending.forEach(cwd => repoLookupsInFlight.add(cwd));
     void Promise.all(pending.map(async (cwd) => {
       try {
@@ -76,9 +123,12 @@ export function useResolvedRepoNames(agents: Agent[]): number {
   return version;
 }
 
-/** " · Project" suffix for a name shown outside its own grouped/labelled
- *  context (a flat picker, a toast, a detail header) — empty for the god
- *  agent, who has no project and is never ambiguous (there is only one). */
+/** " - KEY · Project" suffix for a name shown outside its own grouped/
+ *  labelled context (a flat picker, a toast, a detail header) — empty for
+ *  the god agent, who has no project and is never ambiguous. The Jira key
+ *  piece is omitted when that repo has no (matching, enabled) binding. */
 export function projectTag(agent: Agent): string {
-  return agent.isGod ? '' : ` · ${repoLabelOf(agent)}`;
+  if (agent.isGod) return '';
+  const key = jiraKeyFor(agent);
+  return `${key ? ` - ${key}` : ''} · ${repoLabelOf(agent)}`;
 }
