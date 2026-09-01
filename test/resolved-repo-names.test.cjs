@@ -3,17 +3,25 @@
 // src/renderer/src/hooks/useResolvedRepoNames.ts — extracted from
 // FullscreenTerminal.tsx so every place an agent's bare name shows (Command
 // Center pickers, restore toasts, detail headers) can tag it with the SAME
-// reliably-resolved project label the roster already groups by. Only the
-// pure functions are unit-tested here — `useResolvedRepoNames` itself needs
-// a mounted React tree to exercise (it drives the async git lookup that
-// fills the module-level cache these fall back from).
+// reliably-resolved project label the roster already groups by, PLUS (once
+// this file's second job landed) the Jira project key that repo is bound to,
+// if any — so "Pam" on two different projects, each bound to its own Jira
+// key, reads as "Pam - BURD · burdastyle" vs "Pam - BRAVI · bravifarmacie".
+// Only the pure functions are unit-tested here — `useResolvedRepoNames`
+// itself needs a mounted React tree to exercise (it drives the async git
+// lookup and Jira-bindings fetch that fill the module-level caches these
+// read from).
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
-const { basename, repoKeyOf, repoLabelOf, projectTag } =
+const { basename, repoKeyOf, repoLabelOf, projectTag, jiraKeyFor, bindingMatches } =
   loadTs('src/renderer/src/hooks/useResolvedRepoNames.ts');
+
+function binding(overrides) {
+  return { key: 'BURD', repo: '/repo/burdastyle', baseBranch: 'develop', enabled: true, ...overrides };
+}
 
 function agent(overrides) {
   return { id: 'a1', name: 'Andy', cwd: '/Users/shaibon/www/burdastyle', isGod: false, ...overrides };
@@ -53,4 +61,42 @@ test('two same-named agents on different projects produce different tags', () =>
   const andyA = agent({ id: 'andy-1', cwd: '/repo/burdastyle', project: 'BurdaStyle' });
   const andyB = agent({ id: 'andy-2', cwd: '/repo/bravifarmacie', project: 'BravaFarmacie' });
   assert.notEqual(`${andyA.name}${projectTag(andyA)}`, `${andyB.name}${projectTag(andyB)}`);
+});
+
+test('jiraKeyFor returns undefined before the bindings list has loaded — never throws, never guesses', () => {
+  // A fresh module load never had a mounted React tree drive
+  // useResolvedRepoNames, so the module-private bindings cache is still
+  // null here — exactly the "not fetched yet" state a real first render is in.
+  assert.equal(jiraKeyFor(agent()), undefined);
+});
+
+test('projectTag has no " - KEY" segment while the Jira key is unresolved', () => {
+  assert.equal(projectTag(agent({ project: 'BurdaStyle' })), ' · BurdaStyle');
+});
+
+test('bindingMatches: enabled + same repo root + unscoped agents matches anyone in that repo', () => {
+  assert.equal(bindingMatches(binding({ agents: undefined }), '/repo/burdastyle', 'pam-1'), true);
+  assert.equal(bindingMatches(binding({ agents: [] }), '/repo/burdastyle', 'pam-1'), true);
+});
+
+test('bindingMatches: scoped to specific agents excludes anyone not in that list', () => {
+  assert.equal(bindingMatches(binding({ agents: ['pam-1', 'dwight-1'] }), '/repo/burdastyle', 'pam-1'), true);
+  assert.equal(bindingMatches(binding({ agents: ['pam-1', 'dwight-1'] }), '/repo/burdastyle', 'toby-1'), false);
+});
+
+test('bindingMatches: a disabled binding never matches, even with the right repo and agent', () => {
+  assert.equal(bindingMatches(binding({ enabled: false }), '/repo/burdastyle', 'pam-1'), false);
+});
+
+test('bindingMatches: a different repo root never matches, Jira key aside', () => {
+  assert.equal(bindingMatches(binding({ repo: '/repo/burdastyle' }), '/repo/bravifarmacie', 'pam-1'), false);
+});
+
+test('the real-world case this feature exists for: same agent id, two different (enabled) bindings for two different repos, produce two different keys', () => {
+  const bravi = binding({ key: 'BRAVI', repo: '/repo/bravifarmacie', agents: ['pam-2'] });
+  const burd = binding({ key: 'BURD', repo: '/repo/burdastyle', agents: ['pam-1'] });
+  assert.equal(bindingMatches(burd, '/repo/burdastyle', 'pam-1'), true);
+  assert.equal(bindingMatches(bravi, '/repo/burdastyle', 'pam-1'), false);
+  assert.equal(bindingMatches(bravi, '/repo/bravifarmacie', 'pam-2'), true);
+  assert.equal(bindingMatches(burd, '/repo/bravifarmacie', 'pam-2'), false);
 });
