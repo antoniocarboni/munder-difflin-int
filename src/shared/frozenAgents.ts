@@ -16,3 +16,18 @@ export function partitionFrozenAgents<T extends { id: string }>(
   }
   return { toRestore, frozen };
 }
+
+/**
+ * Should a queued message THAW its frozen target instead of being held back?
+ *
+ * Only a deliberate dispatch does. `manual` is set solely by the store's
+ * `releaseQueuedMessage()` ("Send now"), which is already the app's existing
+ * definition of "the user meant this one, now" — see the pause gate in
+ * useHive.ts. Ordinary automatic delivery must never wake a frozen agent, or
+ * freezing would buy nothing.
+ */
+export function shouldThawForDispatch(
+  msg: { manual?: boolean; isFrozen?: boolean }
+): boolean {
+  return msg.manual === true && msg.isFrozen === true;
+}
