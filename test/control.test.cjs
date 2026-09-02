@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
 const { ControlRegistry } = loadTs('src/main/control.ts');
-const { partitionFrozenAgents } = loadTs('src/shared/frozenAgents.ts');
+const { partitionFrozenAgents, shouldThawForDispatch } = loadTs('src/shared/frozenAgents.ts');
 
 test('auto-delivery pause is independent from tool pause and halt', () => {
   const control = new ControlRegistry();
@@ -69,4 +69,16 @@ test('partitionFrozenAgents is a no-op when the frozen list is empty or absent',
   assert.deepEqual(partitionFrozenAgents(agents, undefined).toRestore.map((a) => a.id), ['a', 'b']);
   assert.deepEqual(partitionFrozenAgents(agents, []).toRestore.map((a) => a.id), ['a', 'b']);
   assert.deepEqual(partitionFrozenAgents(agents, undefined).frozen, []);
+});
+
+test('shouldThawForDispatch: a manual dispatch to a frozen agent thaws', () => {
+  assert.equal(shouldThawForDispatch({ manual: true, isFrozen: true }), true);
+});
+
+test('shouldThawForDispatch: an automatic delivery to a frozen agent does not thaw', () => {
+  assert.equal(shouldThawForDispatch({ manual: false, isFrozen: true }), false);
+});
+
+test('shouldThawForDispatch: a manual dispatch to a non-frozen agent is a no-op', () => {
+  assert.equal(shouldThawForDispatch({ manual: true, isFrozen: false }), false);
 });
