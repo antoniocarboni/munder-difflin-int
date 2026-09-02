@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const loadTs = require('./load-ts.cjs');
 
 const { ControlRegistry } = loadTs('src/main/control.ts');
+const { partitionFrozenAgents } = loadTs('src/shared/frozenAgents.ts');
 
 test('auto-delivery pause is independent from tool pause and halt', () => {
   const control = new ControlRegistry();
@@ -54,4 +55,18 @@ test('whitespace-only steers are ignored and never fill the queue', () => {
   control.steer('dev9', 'real guidance');
   assert.equal(control.snapshot('dev9').pendingSteers, 1);
   assert.equal(control.takeSteer('dev9'), 'real guidance');
+});
+
+test('partitionFrozenAgents keeps frozen ids out of the restore set', () => {
+  const agents = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  const { toRestore, frozen } = partitionFrozenAgents(agents, ['b']);
+  assert.deepEqual(toRestore.map((a) => a.id), ['a', 'c']);
+  assert.deepEqual(frozen.map((a) => a.id), ['b']);
+});
+
+test('partitionFrozenAgents is a no-op when the frozen list is empty or absent', () => {
+  const agents = [{ id: 'a' }, { id: 'b' }];
+  assert.deepEqual(partitionFrozenAgents(agents, undefined).toRestore.map((a) => a.id), ['a', 'b']);
+  assert.deepEqual(partitionFrozenAgents(agents, []).toRestore.map((a) => a.id), ['a', 'b']);
+  assert.deepEqual(partitionFrozenAgents(agents, undefined).frozen, []);
 });
