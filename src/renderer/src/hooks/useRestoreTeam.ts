@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { useStore, type Agent } from '@/store/store';
 import { buildSpawnCommand, inferAgentProvider, tokenizeCommand, type HarnessConfig } from '@/store/config';
 import { roleForHiveSpawn } from '@shared/agentRole';
+import { partitionFrozenAgents } from '@shared/frozenAgents';
 
 /** "Restore team" — respawn every worker from the previous session.
  *
@@ -75,7 +76,14 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
     note = null;
     emit();
     const prevSel = useStore.getState().selectedId;
-    const restorableAgents = useStore.getState().restorableAgents;
+    // Frozen agents (the persisted autoDeliveryPausedAgents list — see
+    // src/shared/frozenAgents.ts) are left exactly where they are: no spawn,
+    // no hive-protocol turn burned, no restorable-list mutation. They stay
+    // restorable and come back only via a deliberate, non-restore dispatch.
+    const { toRestore: restorableAgents, frozen } = partitionFrozenAgents(
+      useStore.getState().restorableAgents,
+      config?.autoDeliveryPausedAgents
+    );
     // Tally every agent's outcome so the run ALWAYS leaves a visible trace — the
     // original bug was that every failure path was console-only, so a click that
     // couldn't spawn anything looked like a dead button.
@@ -203,6 +211,7 @@ export function useRestoreTeam(config?: HarnessConfig | null): RestoreTeamState 
       const parts: string[] = [];
       if (restored) parts.push(`restored ${restored}`);
       if (alreadyLive) parts.push(`${alreadyLive} already live`);
+      if (frozen.length) parts.push(`${frozen.length} frozen (skipped)`);
       if (failures.length) parts.push(`${failures.length} failed — ${failures.join('; ')}`);
       note = parts.length ? parts.join(' · ') : 'nothing to restore';
       emit();
