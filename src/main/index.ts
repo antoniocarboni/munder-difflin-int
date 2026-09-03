@@ -1241,6 +1241,11 @@ function writeFleetSnapshot(): void {
     // Async + incremental; returns immediately and never throws into the timer.
     const hiveRoot = hive.root();
     if (hiveRoot) void costTotals.refresh(join(hiveRoot, 'cost-ledger.jsonl'));
+    // Frozen agents (autoDeliveryPausedAgents) are otherwise indistinguishable
+    // in the snapshot from one whose PTY just died — same stale lastActiveSecAgo,
+    // same silence. Without this, god's roster reads a deliberately-parked agent
+    // as dead. See rosterContext() for where it turns this into the warning.
+    const frozenIds = new Set(readConfig().autoDeliveryPausedAgents ?? []);
     const agents = Object.entries(reg.agents)
       .filter(([, a]) => !a.archived)
       .map(([id, a]) => {
@@ -1264,7 +1269,8 @@ function writeFleetSnapshot(): void {
           lastTool: spans.length ? spans[spans.length - 1].tool : null,
           lastActiveSecAgo: u ? Math.round((now - u.ts) / 1000) : null,
           inboxBacklog: hive.inboxBacklog(id),
-          onHold: !!a.onHold
+          onHold: !!a.onHold,
+          frozen: frozenIds.has(id)
         };
       });
     hive.writeFleetSnapshot({ ts: now, agents });

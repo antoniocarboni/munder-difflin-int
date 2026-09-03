@@ -295,7 +295,14 @@ export function AgentStrip({ config }: AgentStripProps) {
             {/* Per-agent dismiss wires straight to removeRestorableAgent
                 (filters + persistRestorable), so a dismissed agent never
                 reappears after reload. */}
-            {restorableAgents.map((a: Agent) => (
+            {restorableAgents.map((a: Agent) => {
+              // A frozen agent has no live pty after a restart, so Restore Team
+              // deliberately never respawns it (partitionFrozenAgents) — it just
+              // sits here with no way back. This was the only place it was still
+              // visible at all, so it is also the only place Unfreeze can be
+              // reached from once the app has restarted.
+              const isFrozen = !!config?.autoDeliveryPausedAgents?.includes(a.id);
+              return (
               <span
                 key={a.id}
                 title={t('agentStrip.restorable', { name: `${a.name}${projectTag(a)}` })}
@@ -313,6 +320,21 @@ export function AgentStrip({ config }: AgentStripProps) {
                 <span style={{ fontSize: 11, color: 'var(--cth-ink-500)', whiteSpace: 'nowrap' }}>
                   {a.description ? a.description.slice(0, 24) : ''}
                 </span>
+                {isFrozen && (
+                  <button
+                    onClick={() => void window.cth.controlAutoDelivery(a.id, false)}
+                    className="cth-tip cth-tip-left cth-tip-wrap"
+                    data-tip={t('agentControl.unfreezeTip')}
+                    aria-label={t('agentControl.unfreezeAria')}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      height: 18, padding: '0 6px', lineHeight: 1, whiteSpace: 'nowrap',
+                      fontSize: 10, color: 'var(--cth-ink-900)',
+                      background: 'var(--cth-cream-50)', boxShadow: 'inset 0 0 0 1px var(--cth-ink-300)',
+                      border: 'none', cursor: 'pointer'
+                    }}
+                  >{t('agentControl.unfreeze')}</button>
+                )}
                 <button
                   onClick={() => useStore.getState().removeRestorableAgent(a.id)}
                   title={t('agentStrip.dismiss', { name: `${a.name}${projectTag(a)}` })}
@@ -325,7 +347,8 @@ export function AgentStrip({ config }: AgentStripProps) {
                   }}
                 >✕</button>
               </span>
-            ))}
+              );
+            })}
             <PixelButton
               variant="primary"
               size="sm"
