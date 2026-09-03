@@ -4,7 +4,7 @@
 // bridge ships with its IPC handlers from day one.
 
 import type { JiraProjectBinding } from '@shared/jiraProjects';
-export type { JiraProjectBinding, JiraPollSettings } from '@shared/jiraProjects';
+export type { JiraProjectBinding, JiraPollSettings, JiraAssigneeAllowlistEntry } from '@shared/jiraProjects';
 
 interface JiraProjectsBridge {
   jiraProjectsList(): Promise<JiraProjectBinding[]>;

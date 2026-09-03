@@ -27,6 +27,25 @@ test('a fresh config defaults jiraPoll to the decided settings', () => {
   assert.equal(cfg.jiraPoll.pollIntervalMs, 300000);
   assert.equal(cfg.jiraPoll.assigneeFilter, 'currentUser');
   assert.equal(cfg.jiraPoll.statusFilter, 'To Do');
+  assert.equal(cfg.jiraPoll.assigneeAllowlist, undefined);
+});
+
+test('a jiraPoll persisted before assigneeAllowlist existed still loads (no crash, no default list)', () => {
+  const p = path.join(userData, 'config.json');
+  fs.writeFileSync(p, JSON.stringify({
+    onboardingComplete: true,
+    registeredRepos: [],
+    jiraPoll: { pollIntervalMs: 600000, assigneeFilter: 'currentUser', statusFilter: 'To Do' }
+  }));
+  const cfg = readConfig();
+  assert.equal(cfg.jiraPoll.pollIntervalMs, 600000);
+  assert.equal(cfg.jiraPoll.assigneeAllowlist, undefined);
+});
+
+test('JIRA_POLL_MISSION documents the assignee allow-list by accountId, additive to currentUser', () => {
+  assert.ok(JIRA_POLL_MISSION.body.includes('assigneeAllowlist'));
+  assert.ok(JIRA_POLL_MISSION.body.includes('currentUser()'));
+  assert.ok(JIRA_POLL_MISSION.body.includes('accountId'));
 });
 
 test('a config.json written before this field existed still loads (no crash)', () => {

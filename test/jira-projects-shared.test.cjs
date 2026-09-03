@@ -70,4 +70,6 @@ test('DEFAULT_JIRA_POLL_SETTINGS matches the decided defaults', () => {
     assigneeFilter: 'currentUser',
     statusFilter: 'To Do'
   });
+  assert.equal(DEFAULT_JIRA_POLL_SETTINGS.assigneeAllowlist, undefined,
+    'empty/absent allow-list must mean today\'s behavior (assignee = currentUser())');
 });
