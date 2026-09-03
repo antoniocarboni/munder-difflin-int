@@ -70,6 +70,11 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
     setSteer('');
     flash(t('agentControl.flashSteer'));
   };
+  const toggleFreeze = async () => {
+    const s = await window.cth.controlAutoDelivery(agentId, !snap?.autoDeliveryPaused);
+    if (s) setSnap(s);
+    flash(snap?.autoDeliveryPaused ? t('agentControl.flashUnfrozen') : t('agentControl.flashFrozen'));
+  };
 
   return (
     <div style={{
@@ -106,11 +111,19 @@ export function AgentControlStrip({ agentId }: { agentId: string }) {
             Michael — so the tooltip carries that distinction now that the
             grouping no longer does. */}
         <AgentHoldButton agentId={agentId} />
-        {/* v0.3.4: the auto-delivery switch moved to the god's Command Center
-            header — ONE floor-wide control instead of a per-agent toggle. */}
-        {snap?.autoDeliveryPaused && (
-          <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('agentControl.deliveryPaused')}</span>
-        )}
+        {/* The Command Center header still has the floor-wide auto-delivery
+            switch; this is the per-agent version of the same control. */}
+        <PixelButton variant={snap?.autoDeliveryPaused ? 'primary' : 'secondary'} size="sm" onClick={toggleFreeze}>
+          <span
+            className="cth-tip cth-tip-left cth-tip-wrap"
+            data-tip={snap?.autoDeliveryPaused
+              ? t('agentControl.unfreezeTip')
+              : t('agentControl.freezeTip')}
+            aria-label={snap?.autoDeliveryPaused ? t('agentControl.unfreezeAria') : t('agentControl.freezeAria')}
+          >
+            {snap?.autoDeliveryPaused ? t('agentControl.unfreeze') : t('agentControl.freeze')}
+          </span>
+        </PixelButton>
         {snap?.halted && <span style={{ fontSize: 11, color: 'var(--cth-coral)' }}>{t('agentControl.halting')}</span>}
         {!!snap?.pendingSteers && <span style={{ fontSize: 11, color: 'var(--cth-ink-500)' }}>{t('agentControl.steersQueued', { count: snap.pendingSteers })}</span>}
       </div>
