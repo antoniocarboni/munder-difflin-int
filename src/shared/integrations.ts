@@ -196,6 +196,21 @@ export function buildAuthHeaders(
 }
 
 /**
+ * The path "Test Connection" probes when the caller supplies none. Most REST bases
+ * answer at their own root, so the default is the root (''). Jira does not: its
+ * `/rest/api/<version>` base 404s, so it probes the canonical identity endpoint
+ * `myself` instead — which validates the very credential a worker would use, and
+ * leaves the record's configured baseUrl untouched (the path is appended to it).
+ * Official endpoint: GET /rest/api/3/myself.
+ *
+ * Deliberately Jira-only by id: a non-Jira integration whose base happens to be
+ * shaped like `/rest/api/<n>` must still probe its own root.
+ */
+export function defaultProbePath(record: Pick<IntegrationRecord, 'id' | 'baseUrl'>): string {
+  return record.id === 'jira' ? 'myself' : '';
+}
+
+/**
  * Join an integration baseUrl with a worker-supplied path, confining the result
  * under the baseUrl origin (NOT an open proxy). Returns null if the path would
  * escape the origin (absolute URL, host override, or traversal above the base path).

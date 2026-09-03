@@ -2497,7 +2497,7 @@ export class HiveManager {
           id: string; name?: string; role?: string; isGod?: boolean;
           breaker?: string; tokens?: number; usd?: number;
           lastTool?: string | null; lastActiveSecAgo?: number | null; inboxBacklog?: number;
-          onHold?: boolean;
+          onHold?: boolean; frozen?: boolean;
         }>;
       };
       const agents = Array.isArray(snap.agents) ? snap.agents : [];
@@ -2515,6 +2515,7 @@ export class HiveManager {
       const shown = agents.slice(0, MAX);
       let anyCtx = false;
       let anyHold = false;
+      let anyFrozen = false;
       const rows = shown.map((a) => {
         const bits = [a.role ?? 'agent',
           typeof a.lastActiveSecAgo === 'number' ? `active ${ago(a.lastActiveSecAgo)}` : 'no activity yet'];
@@ -2527,6 +2528,10 @@ export class HiveManager {
         // the same scan as `breaker` and `inbox`, and god already treats those
         // as routing signals.
         if (a.onHold) { bits.push('ON HOLD — 1:1 with the human'); anyHold = true; }
+        // A frozen agent looks IDENTICAL to a dead one otherwise — same stale
+        // `no activity yet` / `active Nh ago`, same silence. Say so explicitly
+        // or this reads as archived/killed and gets skipped or re-spawned.
+        if (a.frozen) { bits.push('FROZEN — no auto-delivery'); anyFrozen = true; }
         // Live context-window occupancy from the statusLine shim — lets god see
         // which agents are near-full when routing, instead of guessing from the
         // cumulative token count. Clamp to 0-100; a fresh meter can briefly
@@ -2555,6 +2560,13 @@ export class HiveManager {
             + 'them when picking an owner. Route to someone else, or say the work is waiting. They '
             + 'are still running and their terminal is alive, so this is not a reason to archive '
             + 'them or spawn a replacement. The human flips it off when they are done. '
+          : '')
+        + (anyFrozen
+          ? 'An agent marked `FROZEN` was deliberately parked by an operator, not killed: it gets '
+            + 'no automatic delivery and a restart skips it during auto-restore, so it is present '
+            + 'here even with no recent activity or no live terminal. This is NOT a reason to treat '
+            + 'them as archived/dead or to spawn a replacement. You can still dispatch to them — the '
+            + 'message queues until an operator unfreezes them. '
           : '')
         + 'Route work to someone on this list before spawning anyone new.';
     } catch { return null; }

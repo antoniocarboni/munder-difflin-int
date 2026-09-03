@@ -222,3 +222,55 @@ test('the hold survives a restart, because the registry is the record', async (t
   assert.equal(reg.agents['jim-1'].onHold, true,
     'a hold that evaporated on restart would hand the agent back to Michael silently');
 });
+
+// --- frozen agents (t-029) ---------------------------------------------------
+// A frozen agent (autoDeliveryPausedAgents, see src/shared/frozenAgents.ts) is
+// deliberately parked: no auto-delivery, and Restore Team skips it on purpose
+// after a restart, so it can go quiet for a long time with no live terminal.
+// Without a `frozen` mark on the roster line, that reads EXACTLY like a dead
+// or archived agent (same stale "no activity yet" / "active Nh ago"), and
+// nothing here tells Michael otherwise — see the writer at src/main/index.ts
+// writeFleetSnapshot(), which is what actually sets `frozen` from
+// autoDeliveryPausedAgents before calling hive.writeFleetSnapshot().
+
+test('a frozen agent is marked FROZEN in the roster and not conflated with archived/dead', async (t) => {
+  const { hive } = await floor(t);
+  hive.writeFleetSnapshot({
+    ts: Date.now(),
+    agents: [
+      { id: 'god-1', name: 'Michael', role: 'orchestrator', isGod: true, breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: 6, inboxBacklog: 0 },
+      // No recent activity and no pty — exactly what a killed/archived agent
+      // would also look like without the `frozen` flag.
+      { id: 'jim-1', name: 'Jim', role: 'agent', breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: null, inboxBacklog: 0, frozen: true }
+    ]
+  });
+
+  const line = hive.rosterContext();
+  assert.match(line, /jim-1 "Jim" \([^)]*FROZEN/, 'the mark belongs on that agent, not the line');
+  assert.match(line, /deliberately parked/i, 'must say WHY it looks dead, not just that it is frozen');
+  assert.match(line, /NOT a reason to treat/i, 'must stop Michael from archiving it or spawning a replacement');
+  assert.ok(!line.includes('\n'), 'still one compact line');
+});
+
+test('nothing says frozen until an agent actually is', async (t) => {
+  const { hive } = await floor(t);
+  snapshot(hive); // none of these three are frozen
+  const line = hive.rosterContext();
+  assert.doesNotMatch(line, /FROZEN/);
+  assert.doesNotMatch(line, /deliberately parked/i);
+});
+
+test('unfreezing clears the mark on the next snapshot', async (t) => {
+  const { hive } = await floor(t);
+  hive.writeFleetSnapshot({
+    ts: Date.now(),
+    agents: [{ id: 'jim-1', name: 'Jim', role: 'agent', breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: null, inboxBacklog: 0, frozen: true }]
+  });
+  assert.match(hive.rosterContext(), /FROZEN/);
+
+  hive.writeFleetSnapshot({
+    ts: Date.now(),
+    agents: [{ id: 'jim-1', name: 'Jim', role: 'agent', breaker: 'ok', tokens: 0, usd: 0, lastActiveSecAgo: 2, inboxBacklog: 0, frozen: false }]
+  });
+  assert.doesNotMatch(hive.rosterContext(), /FROZEN/);
+});

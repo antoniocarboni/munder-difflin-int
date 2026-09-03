@@ -67,6 +67,15 @@ PLIST
 
 cat > "$APP/Contents/Resources/run-dev.command" <<CMD
 #!/bin/bash
+# Run the agents against a NON-DEFAULT Claude account (e.g. a company login
+# kept separate from your personal one): uncomment and point at that
+# account's config dir. \`CLAUDE_CONFIG_DIR\` selects which config dir — and
+# therefore which credentials — the claude CLI uses, and src/main/ptyEnv.ts
+# passes it through to every agent PTY on purpose while stripping the rest
+# of the CLAUDE* namespace. It belongs HERE rather than in a shell profile:
+# this .command is run by bash as a NON-INTERACTIVE script, so ~/.zshrc and
+# ~/.bash_profile are never sourced for a Dock launch.
+# export CLAUDE_CONFIG_DIR="\$HOME/.claude-<account>"
 cd "$REPO_ROOT" || exit 1
 npm run dev
 CMD

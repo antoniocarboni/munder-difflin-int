@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
-import { jiraProjectsClient, type JiraProjectBinding } from '@/jiraProjects/jiraProjectsClient';
+import { jiraProjectsClient, type JiraProjectBinding, type JiraAssigneeAllowlistEntry } from '@/jiraProjects/jiraProjectsClient';
 import { integrationsClient } from '@/integrations/registryClient';
 import { authTypeNeedsSecret as needsSecret } from '@shared/integrations';
 import { PixelButton } from './PixelButton';
@@ -28,6 +28,7 @@ interface JiraPollSettingsState {
   pollIntervalMs: number;
   assigneeFilter: 'currentUser';
   statusFilter: string;
+  assigneeAllowlist?: JiraAssigneeAllowlistEntry[];
 }
 
 /** An assignable agent for the multi-select: every non-archived hive-registry
@@ -75,6 +76,7 @@ export function JiraProjectsRegistry() {
   const [currentJiraPoll, setCurrentJiraPoll] = useState<JiraPollSettingsState>({
     pollIntervalMs: 300000, assigneeFilter: 'currentUser', statusFilter: 'To Do'
   });
+  const [newAssignee, setNewAssignee] = useState({ accountId: '', label: '' });
   const [note, setNote] = useState('');
   const flash = (msg: string) => { setNote(msg); setTimeout(() => setNote(''), 2400); };
 
@@ -125,6 +127,24 @@ export function JiraProjectsRegistry() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const persistPoll = (next: JiraPollSettingsState) => {
+    setCurrentJiraPoll(next);
+    void window.cth.updateConfig({ jiraPoll: next });
+  };
+  const addAssignee = () => {
+    const accountId = newAssignee.accountId.trim();
+    if (!accountId) return;
+    const label = newAssignee.label.trim() || accountId;
+    const list = currentJiraPoll.assigneeAllowlist ?? [];
+    if (list.some((a) => a.accountId === accountId)) { setNewAssignee({ accountId: '', label: '' }); return; }
+    persistPoll({ ...currentJiraPoll, assigneeAllowlist: [...list, { accountId, label }] });
+    setNewAssignee({ accountId: '', label: '' });
+  };
+  const removeAssignee = (accountId: string) => {
+    const list = (currentJiraPoll.assigneeAllowlist ?? []).filter((a) => a.accountId !== accountId);
+    persistPoll({ ...currentJiraPoll, assigneeAllowlist: list });
   };
 
   const onRemove = async (key: string) => {
@@ -218,6 +238,32 @@ export function JiraProjectsRegistry() {
               />
             </div>
             <span style={hint}>{tr('jiraProjects.claimFilterFixed')}</span>
+
+            <span style={{ ...fieldLabel, marginTop: 8 }}>{tr('jiraProjects.assigneeAllowlist')}</span>
+            <span style={hint}>{tr('jiraProjects.assigneeAllowlistHint')}</span>
+            {(currentJiraPoll.assigneeAllowlist ?? []).map((a) => (
+              <div key={a.accountId} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 12, color: 'var(--cth-ink-900)', flex: 1 }}>
+                  {a.label} <span style={{ fontFamily: 'var(--cth-font-mono)', color: 'var(--cth-ink-500)' }}>({a.accountId})</span>
+                </span>
+                <PixelButton variant="secondary" size="sm" aria-label="Remove" onClick={() => removeAssignee(a.accountId)}>×</PixelButton>
+              </div>
+            ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                value={newAssignee.accountId}
+                placeholder={tr('jiraProjects.assigneeAccountIdPlaceholder')}
+                onChange={(e) => setNewAssignee((s) => ({ ...s, accountId: e.target.value }))}
+                style={{ ...inputStyle, fontFamily: 'var(--cth-font-mono)', flex: 1 }}
+              />
+              <input
+                value={newAssignee.label}
+                placeholder={tr('jiraProjects.assigneeLabelPlaceholder')}
+                onChange={(e) => setNewAssignee((s) => ({ ...s, label: e.target.value }))}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <PixelButton variant="secondary" size="sm" onClick={addAssignee}>{tr('jiraProjects.addAssignee')}</PixelButton>
+            </div>
           </div>
         </>
       )}

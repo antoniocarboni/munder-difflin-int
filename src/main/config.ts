@@ -131,9 +131,15 @@ export const JIRA_POLL_MISSION: ScheduledMission = {
   body:
     'Jira claim poll. Fetch the active project bindings from the loopback broker ' +
     '(GET /jira-bindings via MD_BROKER_URL, with your MD_BROKER_TOKEN capability ' +
-    'header) — it returns { bindings: [{key, repo, baseBranch, agents}], poll }. ' +
-    'For each enabled binding, look up Jira issues assigned to the current user ' +
-    'in status "To Do" for that project key. For every issue found: (1) claim it ' +
+    'header) — it returns { bindings: [{key, repo, baseBranch, agents}], poll }, ' +
+    'where poll.assigneeAllowlist is [{accountId, label}, ...] (may be empty). ' +
+    'For each enabled binding, look up Jira issues in status "To Do" for that ' +
+    'project key, assigned to the current user OR to anyone in ' +
+    'poll.assigneeAllowlist: build the JQL assignee clause as ' +
+    '`assignee = currentUser()` when the allow-list is empty, or ' +
+    '`assignee in (currentUser(), <accountId1>, <accountId2>, ...)` when it is ' +
+    'not — always by accountId, never by displayName (not reliable in JQL). ' +
+    'For every issue found: (1) claim it ' +
     '— transition it automatically on Jira (no comment on the transition itself); ' +
     '(2) create a card in tasks.json with project=<key>, repo=<binding.repo>, ' +
     'status="doing", and assign it to one of binding.agents (or any capable agent ' +

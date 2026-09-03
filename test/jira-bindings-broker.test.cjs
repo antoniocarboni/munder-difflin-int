@@ -64,3 +64,21 @@ test('GET /jira-bindings only ever returns what getJiraBindings hands back (alre
   assert.deepEqual(body.bindings, [disabled]);
   broker.stop();
 });
+
+test('GET /jira-bindings passes poll.assigneeAllowlist through untouched', async () => {
+  const allowlist = [{ accountId: '557058:49fb010c-955d-4f05-bf6f-a7af12b40de2', label: 'Antonio Carboni' }];
+  const broker = new IntegrationBroker({
+    getRecord: () => undefined,
+    getSecret: () => undefined,
+    getJiraBindings: () => ({
+      bindings: [],
+      poll: { pollIntervalMs: 300000, assigneeFilter: 'currentUser', statusFilter: 'To Do', assigneeAllowlist: allowlist }
+    })
+  });
+  await broker.start();
+  const token = broker.grant('god', []);
+  const res = await fetch(`${broker.url()}/jira-bindings`, { headers: { 'x-md-broker-token': token } });
+  const body = await res.json();
+  assert.deepEqual(body.poll.assigneeAllowlist, allowlist);
+  broker.stop();
+});

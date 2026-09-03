@@ -22,6 +22,14 @@ export interface JiraProjectBinding {
   enabled: boolean;
 }
 
+/** One entry in the poll's assignee allow-list. In JQL, displayName is not
+ *  reliable — only `accountId` may be used to build `assignee in (...)`.
+ *  `label` is UI-only (never read to build the query). */
+export interface JiraAssigneeAllowlistEntry {
+  accountId: string;
+  label: string;
+}
+
 export interface JiraPollSettings {
   /** Default 300_000 (5 min). */
   pollIntervalMs: number;
@@ -30,6 +38,13 @@ export interface JiraPollSettings {
   assigneeFilter: 'currentUser';
   /** Default 'To Do'. */
   statusFilter: string;
+  /** Additional Jira accountIds the poll may claim issues for, ON TOP OF
+   *  `currentUser()` (never replacing it). Empty/absent = today's behavior
+   *  (`assignee = currentUser()` only). Non-empty = `assignee in (currentUser(),
+   *  ...accountIds)`, so a shared backlog assigned to someone else (e.g. a
+   *  teammate's queue) becomes visible to the poll. Data, not a call-site
+   *  constant — same convention as `statusFilter`. */
+  assigneeAllowlist?: JiraAssigneeAllowlistEntry[];
 }
 
 export const DEFAULT_JIRA_POLL_SETTINGS: JiraPollSettings = {

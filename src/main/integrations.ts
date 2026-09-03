@@ -26,6 +26,7 @@ import {
   secretRefFor,
   validateBaseUrl,
   buildAuthHeaders,
+  defaultProbePath,
   resolveUpstreamUrl
 } from '../shared/integrations';
 import { readConfig, writeConfig } from './config';
@@ -95,7 +96,7 @@ export async function probeRecord(
   if (!rec) return { ok: false, error: 'unknown integration' };
   const probe = validateBaseUrl(rec.baseUrl);
   if (!probe.ok) return { ok: false, error: probe.error };
-  const target = resolveUpstreamUrl(rec.baseUrl, typeof path === 'string' ? path : '');
+  const target = resolveUpstreamUrl(rec.baseUrl, typeof path === 'string' ? path : defaultProbePath(rec));
   if (!target) return { ok: false, error: 'path escapes the integration baseUrl', code: 'bad_request' };
   const secret = getSecret(rec.secretRef);
   const headers = buildAuthHeaders(rec.authType, rec.authHeader, secret);
