@@ -21,6 +21,7 @@ import { isDurableRole, preferredAgentRole, roleForHiveSpawn } from '../../../sh
 import { inboxNudgeText } from '../../../shared/hiveNudge';
 import { resolveGodName } from '../../../shared/godIdentity';
 import { acquireTerminal, resetTerminal, isTerminalAutomationSafe } from '@/components/terminalPool';
+import { shouldThawForDispatch } from '../../../shared/frozenAgents';
 import { canDeliverToAgent, deliverWithAcknowledgement, checkPrecondition } from './queueDelivery';
 import { OFFICE_CAST, DEFAULT_CHARACTER } from '@/scene/office/cast';
 
@@ -888,6 +889,87 @@ export function useHive(config: HarnessConfig | null): void {
       }
     };
 
+    // A FROZEN agent (an id on the persisted autoDeliveryPausedAgents list) is
+    // skipped by restore, so after a restart it has no live pty and never appears
+    // in `agents` at all — the drain loop below cannot see it and a message
+    // addressed to it would park in its queue forever. A deliberate dispatch
+    // ("send now", which is the only thing that sets m.manual) is the signal to
+    // bring it back: unfreeze it and respawn it with its session resumed, then
+    // let an ordinary later flush deliver once it reports idle. Automatic
+    // delivery must never do this, or freezing would buy nothing.
+    const thawing = new Set<string>();
+    const maybeThaw = async (a: Agent): Promise<void> => {
+      if (thawing.has(a.id)) return;
+      thawing.add(a.id);
+      try {
+        const control = await window.cth.controlSnapshot(a.id);
+        if (!shouldThawForDispatch({ manual: true, isFrozen: control?.autoDeliveryPaused })) return;
+        const provider = inferAgentProvider(a.command, a.provider);
+        const command = (a.command ?? '').trim() || (config ? buildSpawnCommand(config, a.model, provider) : '');
+        if (!command || !a.cwd) {
+          console.warn(`[thaw] no spawn recipe for ${a.id} — leaving it frozen`);
+          return;
+        }
+        const [exe, ...args] = tokenizeCommand(command);
+        const ptyId = a.ptyId ?? `pty-${a.id}`;
+        // Same worktree handling as restore: an isolated agent's worktree survives
+        // a restart on disk, so re-enter it rather than re-isolating — but fall
+        // back to the base repo if the user pruned it between runs.
+        let cwd = a.cwd;
+        let worktreeGone = false;
+        if (a.worktreePath) {
+          if (await window.cth.gitIsRepo(a.worktreePath)) cwd = a.worktreePath;
+          else worktreeGone = true;
+        }
+        const res = await window.cth.spawnPty({
+          id: ptyId,
+          cwd,
+          command: exe,
+          provider,
+          model: a.model,
+          args,
+          cols: 100,
+          rows: 30,
+          isolate: false,
+          resume: true,
+          hive: { id: a.id, name: a.name, provider, cwd, role: roleForHiveSpawn(a) }
+        });
+        if (!res.ok && !(res.error ?? '').includes('already exists')) {
+          console.error('[thaw] spawn failed for', a.id, res.error);
+          return;
+        }
+        // Only now clear the persisted frozen flag: a failed spawn must leave the
+        // agent frozen rather than silently unfrozen AND still not running.
+        await window.cth.controlAutoDelivery(a.id, false);
+        // Hold the drain off this pty until it has finished booting — exactly as
+        // a normal spawn does — so we never type into a half-started CLI.
+        bootGraceUntil.current[a.id] = Date.now() + BOOT_GRACE_MS;
+        if (res.ok) {
+          useStore.getState().addAgent({
+            ...a,
+            provider,
+            ptyId,
+            archived: false,
+            status: 'idle',
+            action: worktreeGone ? 'worktree gone — using base repo' : 'thawing',
+            worktreePath: worktreeGone ? undefined : a.worktreePath,
+            seedPrompt: res.seedPrompt,
+            carrying: undefined,
+            currentStation: 'desk',
+            recentTextTs: Date.now()
+          });
+        } else {
+          // A live pty with this id already exists — the agent was never really
+          // gone, so just retire it from the restorable list.
+          useStore.getState().removeRestorableAgent(a.id);
+        }
+      } catch (e) {
+        console.error('[thaw] error for', a.id, e);
+      } finally {
+        thawing.delete(a.id);
+      }
+    };
+
     // Promote a genuine Slack-origin work item to a stamped kanban card the first
     // time it's dispatched to the office. The card carries slack:{channel,thread_ts}
     // (origin thread) so the main-process done-observer can post its one summary
@@ -922,7 +1004,7 @@ export function useHive(config: HarnessConfig | null): void {
     };
 
     const flush = () => {
-      const { agents, messageQueues } = useStore.getState();
+      const { agents, messageQueues, restorableAgents } = useStore.getState();
       const byId = (id: string) => agents.find((a) => a.id === id);
       const now = Date.now();
 
@@ -939,6 +1021,15 @@ export function useHive(config: HarnessConfig | null): void {
             lastCompactUsed.current[a.id] = message.compactUsed;
           }
         });
+      }
+
+      // Second pass: agents that are NOT live at all. Only a deliberate dispatch
+      // parked at the head of the queue can wake one, and only if it is frozen —
+      // maybeThaw re-checks that against the persisted list before spawning.
+      for (const r of restorableAgents) {
+        if (agents.some((a) => a.id === r.id)) continue;
+        if (!messageQueues[r.id]?.[0]?.manual) continue;
+        void maybeThaw(r);
       }
     };
 
